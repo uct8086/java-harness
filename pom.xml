@@ -68,6 +68,12 @@
             <artifactId>spring-ai-mcp</artifactId>
         </dependency>
 
+        <!-- pgvector (PostgreSQL driver for vector operations) -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+
         <!-- Database (MySQL) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

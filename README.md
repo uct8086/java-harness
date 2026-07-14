@@ -164,40 +164,64 @@ mvn clean package -DskipTests
 
 ### 配置
 
-编辑 `uct8086-ai-app/src/main/resources/application.yml`：
+API Key 通过环境变量注入，不硬编码在配置文件中（不会被提交到版本库）。
+
+**方式一：直接设环境变量**（推荐，避免每次输入）
+
+```powershell
+# PowerShell
+$env:SPRING_AI_OPENAI_API_KEY="sk-your-deepseek-key"
+```
+
+```bash
+# Linux / macOS / Git Bash
+export SPRING_AI_OPENAI_API_KEY=sk-your-deepseek-key
+```
+
+**方式二：IntelliJ 启动配置中设置**
+
+Run/Debug Configuration → Environment variables → 添加：
+```
+SPRING_AI_OPENAI_API_KEY=sk-your-deepseek-key
+```
+
+**application.yml 中的引用（无需修改）：**
 
 ```yaml
 spring:
   ai:
     openai:
-      api-key: ${OPENAI_API_KEY:your-api-key-here}
-      model: ${AI_MODEL:gpt-4o}
-      temperature: 0.7
+      api-key: ${SPRING_AI_OPENAI_API_KEY:}   # 从环境变量读取
+      base-url: https://api.deepseek.com
+      chat:
+        options:
+          model: deepseek-v4-pro
+          temperature: 0.7
 
 uct8086:
   ai:
-    permission-mode: DEFAULT        # DEFAULT | AUTO | PLAN_MODE | READ_ONLY
-    max-turns: 50                    # Agent Loop 最大迭代次数
-    retry-enabled: true             # API 重试
-    max-retries: 3
-    retry-delay-ms: 1000
-    parallel-tool-execution: true   # 并行工具执行
-    context-compression: true       # 上下文压缩
-    compression-threshold: 100000   # 压缩阈值（token 数）
-    working-directory: ${user.dir}  # 工作目录
+    permission-mode: DEFAULT
+    max-turns: 50
+    working-directory: ${user.dir}
 ```
 
 ### 运行
 
-```bash
-# 设置 API Key
-export OPENAI_API_KEY=your-api-key
+```powershell
+# PowerShell — 设置 Key 并启动
+$env:SPRING_AI_OPENAI_API_KEY="sk-your-deepseek-key"
+mvn spring-boot:run
 
-# 启动应用
-mvn spring-boot:run -pl uct8086-ai-app
+# 或一行搞定
+$env:SPRING_AI_OPENAI_API_KEY="sk-your-deepseek-key"; mvn spring-boot:run
 ```
 
-应用启动后，REST API 在 `http://localhost:9081` 可用。
+```bash
+# Linux / macOS / Git Bash
+SPRING_AI_OPENAI_API_KEY=sk-your-deepseek-key mvn spring-boot:run
+```
+
+应用启动后，REST API 在 `http://localhost:9081` 可用。前端在 `http://localhost:5173`。
 
 ## REST API
 
@@ -205,7 +229,7 @@ mvn spring-boot:run -pl uct8086-ai-app
 
 ```bash
 # 发送对话
-curl -X POST http://localhost:9081/api/chat \
+curl -X POST http://localhost:8080/api/chat \
   -H "Content-Type: application/json" \
   -d '{"prompt": "列出当前目录下的文件", "sessionId": null}'
 
@@ -361,7 +385,7 @@ public class HelpCommand implements HarnessCommand {
 
 ### 自定义技能
 
-创建 Markdown 文件（如 `~/.uct8086/skills/git-guide.md`）：
+创建 Markdown 文件（如 `.uct8086/skills/git-guide.md`）：
 
 ```markdown
 ---
@@ -409,7 +433,7 @@ description: Git 操作指南和最佳实践
 
 - `skills.uct8086.ai.Skill` — 技能 record（name, description, content, sourcePath, metadata）
 - `SkillLoader` — 从文件系统加载 Markdown 技能，解析 YAML frontmatter
-- `SkillRegistry` — 技能注册表，支持从多目录加载（`~/.uct8086/skills/`、`.uct8086/skills/`）
+- `SkillRegistry` — 技能注册表，支持项目 `.uct8086/skills/` 目录加载
 
 ### uct8086-ai-memory
 
@@ -464,14 +488,6 @@ Spring Boot 应用入口：
 | `uct8086.ai.temperature` | `0.7` | 温度参数 |
 | `uct8086.ai.system-prompt` | (null) | 自定义系统提示（null = 默认） |
 | `server.port` | `8080` | 服务端口 |
-
-## Todo
-
-待完成事项：
-
-- [ ] **接入 PGVector** — 集成 PostgreSQL + pgvector 扩展，实现向量化存储与语义检索，替代当前基于文件的记忆存储，支持高效的相似度搜索和 RAG 场景。
-- [ ] **Redis 缓存对话，处理长上下文** — 引入 Redis 作为会话缓存层，将对话历史与上下文数据缓存到 Redis，解决长对话场景下的上下文膨胀问题，支持滑动窗口和摘要压缩策略。
-- [ ] **优化 Memory，处理服务端 Memory** — 重构 Memory 模块，从本地文件存储升级为服务端集中式记忆管理，支持多用户/多会话的记忆隔离与共享，提供更细粒度的记忆生命周期管理（过期、优先级、衰减）。
 
 ## License
 

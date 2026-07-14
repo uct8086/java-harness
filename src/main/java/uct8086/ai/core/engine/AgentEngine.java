@@ -1,5 +1,6 @@
 package uct8086.ai.core.engine;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import uct8086.ai.common.model.AgentMessage;
 import uct8086.ai.common.model.TokenUsage;
 import uct8086.ai.common.model.ToolExecutionContext;
@@ -12,29 +13,17 @@ import uct8086.ai.core.tool.ToolExecutionService;
 import uct8086.ai.core.tool.ToolRegistry;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.document.Document;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.stereotype.Component;
+import uct8086.ai.vectorstore.PgVectorEmbeddingStore;
 
-/**
- * The core agent engine implementing the Agent Loop.
- * Maps to OpenHarness's QueryEngine / Agent Loop.
- *
- * <p>The agent loop:
- * <ol>
- *   <li>Build system prompt (with tools, skills, memory)</li>
- *   <li>Call the model with user prompt and tool callbacks</li>
- *   <li>If model requests tool calls, execute them through the pipeline</li>
- *   <li>Send results back to the model</li>
- *   <li>Repeat until model is done or max turns reached</li>
- * </ol>
- *
- * <p>Tool execution pipeline per call:
- * Permission → PreToolUse Hook → Execute → PostToolUse Hook
- */
 @Component
 public class AgentEngine {
 
@@ -48,6 +37,9 @@ public class AgentEngine {
     private final CostTracker costTracker;
     private final PermissionChecker permissionChecker;
     private final HarnessProperties properties;
+
+    @Autowired(required = false)
+    private PgVectorEmbeddingStore vectorStore;
 
     public AgentEngine(ChatModel chatModel,
                        ToolRegistry toolRegistry,
@@ -67,87 +59,73 @@ public class AgentEngine {
         this.properties = properties;
     }
 
-    /**
-     * Execute a single prompt through the agent loop.
-     *
-     * @param userPrompt the user's input prompt
-     * @param sessionId optional session ID for context (null = new session)
-     * @return the agent loop result
-     */
+    private String enrichWithRag(String systemPrompt, String userPrompt) {
+        if (vectorStore == null) return systemPrompt;
+        try {
+            List<Document> docs = vectorStore.search(userPrompt, 3);
+            if (docs.isEmpty()) return systemPrompt;
+            String context = docs.stream()
+                    .map(Document::getText)
+                    .collect(Collectors.joining("\n---\n"));
+            log.debug("RAG: enriched prompt with {} relevant documents", docs.size());
+            return systemPrompt + "\n\n## Relevant Documents (from vector store)\n" + context;
+        } catch (Exception e) {
+            log.warn("RAG enrichment failed, continuing without vector context", e);
+            return systemPrompt;
+        }
+    }
+
     public AgentLoopResult execute(String userPrompt, String sessionId) {
-        // Create or get session
         SessionManager.ConversationSession session = (sessionId != null)
                 ? sessionManager.getSession(sessionId).orElseGet(() -> sessionManager.createSession())
                 : sessionManager.createSession();
 
-        // Set permission mode from config
         permissionChecker.setMode(properties.getPermissionMode());
-
-        // Build execution context
         Path workingDir = Path.of(properties.getWorkingDirectory());
         ToolExecutionContext context = new ToolExecutionContext(
-                session.getId(),
-                workingDir,
-                properties.getPermissionMode()
-        );
+                session.getId(), workingDir, properties.getPermissionMode());
 
-        // Build system prompt
         String systemPrompt = properties.getSystemPrompt() != null
                 ? properties.getSystemPrompt()
                 : promptAssembler.buildSystemPrompt();
-
-        // Record user message
+        systemPrompt = enrichWithRag(systemPrompt, userPrompt);
         sessionManager.addMessage(session.getId(), AgentMessage.user(userPrompt));
 
-        // Build tool callbacks
         ToolCallback[] callbacks = buildToolCallbacks();
-
         log.info("Starting agent loop for session {} (tools: {})", session.getId(), callbacks.length);
-        log.debug("System prompt: {}", systemPrompt != null && systemPrompt.length() > 500 ? systemPrompt.substring(0, 500) + "..." : systemPrompt);
 
         long startTime = System.currentTimeMillis();
-
         try {
-            // Execute using ChatClient with tool calling
             HarnessToolCallbackAdapter.setContext(context);
-
             ChatClient chatClient = ChatClient.create(chatModel);
 
-            String response = chatClient.prompt()
+            ChatResponse chatResponse = chatClient.prompt()
                     .system(systemPrompt)
                     .user(userPrompt)
                     .tools(callbacks)
                     .call()
-                    .content();
+                    .chatResponse();
+
+            String response = chatResponse.getResult().getOutput().getText();
+            TokenUsage usage = extractUsage(chatResponse);
 
             long elapsed = System.currentTimeMillis() - startTime;
-            log.info("Model responded in {}ms, response length: {} chars", elapsed, response != null ? response.length() : 0);
-            log.debug("Model response: {}", response != null && response.length() > 500 ? response.substring(0, 500) + "..." : response);
+            log.info("Model responded in {}ms, in={} out={}", elapsed,
+                    usage.inputTokens(), usage.outputTokens());
 
-            // Record assistant message
             sessionManager.addMessage(session.getId(), AgentMessage.assistant(response));
-
-            // Track usage (simplified - actual token usage would come from ChatResponse)
-            TokenUsage usage = new TokenUsage();
             costTracker.record(session.getId(), usage);
-
-            log.info("Agent loop completed for session {} in {}ms", session.getId(), System.currentTimeMillis() - startTime);
-
             return AgentLoopResult.success(response, 1, List.of(), usage);
 
         } catch (Exception e) {
-            log.error("Agent loop failed for session {} after {}ms", session.getId(), System.currentTimeMillis() - startTime, e);
+            log.error("Agent loop failed for session {}", session.getId(), e);
             return AgentLoopResult.failure(e.getMessage(), 0, List.of(), new TokenUsage());
         } finally {
             HarnessToolCallbackAdapter.clearContext();
         }
     }
 
-    /**
-     * Execute a prompt with additional context (skills, memory).
-     */
     public AgentLoopResult execute(String userPrompt, String sessionId, String additionalContext) {
-        // Create or get session
         SessionManager.ConversationSession session = (sessionId != null)
                 ? sessionManager.getSession(sessionId).orElseGet(() -> sessionManager.createSession())
                 : sessionManager.createSession();
@@ -155,57 +133,59 @@ public class AgentEngine {
         permissionChecker.setMode(properties.getPermissionMode());
         Path workingDir = Path.of(properties.getWorkingDirectory());
         ToolExecutionContext context = new ToolExecutionContext(
-                session.getId(),
-                workingDir,
-                properties.getPermissionMode()
-        );
+                session.getId(), workingDir, properties.getPermissionMode());
 
         String systemPrompt = promptAssembler.buildSystemPrompt(additionalContext);
+        systemPrompt = enrichWithRag(systemPrompt, userPrompt);
         sessionManager.addMessage(session.getId(), AgentMessage.user(userPrompt));
 
         ToolCallback[] callbacks = buildToolCallbacks();
         log.info("Starting agent loop for session {} (tools: {}, with context)", session.getId(), callbacks.length);
-        log.debug("Additional context: {}", additionalContext);
 
         long startTime = System.currentTimeMillis();
-
         try {
             HarnessToolCallbackAdapter.setContext(context);
             ChatClient chatClient = ChatClient.create(chatModel);
 
-            String response = chatClient.prompt()
+            ChatResponse chatResponse = chatClient.prompt()
                     .system(systemPrompt)
                     .user(userPrompt)
                     .tools(callbacks)
                     .call()
-                    .content();
+                    .chatResponse();
+
+            String response = chatResponse.getResult().getOutput().getText();
+            TokenUsage usage = extractUsage(chatResponse);
 
             long elapsed = System.currentTimeMillis() - startTime;
-            log.info("Model responded in {}ms, response length: {} chars", elapsed, response != null ? response.length() : 0);
-            log.debug("Model response: {}", response != null && response.length() > 500 ? response.substring(0, 500) + "..." : response);
+            log.info("Model responded in {}ms, in={} out={}", elapsed,
+                    usage.inputTokens(), usage.outputTokens());
 
             sessionManager.addMessage(session.getId(), AgentMessage.assistant(response));
-            TokenUsage usage = new TokenUsage();
             costTracker.record(session.getId(), usage);
-
-            log.info("Agent loop completed for session {} in {}ms", session.getId(), System.currentTimeMillis() - startTime);
-
             return AgentLoopResult.success(response, 1, List.of(), usage);
 
         } catch (Exception e) {
-            log.error("Agent loop failed for session {} after {}ms", session.getId(), System.currentTimeMillis() - startTime, e);
+            log.error("Agent loop failed for session {}", session.getId(), e);
             return AgentLoopResult.failure(e.getMessage(), 0, List.of(), new TokenUsage());
         } finally {
             HarnessToolCallbackAdapter.clearContext();
         }
     }
 
-    /**
-     * Build tool callbacks from registered tools.
-     */
     private ToolCallback[] buildToolCallbacks() {
         return toolRegistry.getAll().stream()
                 .map(tool -> (ToolCallback) new HarnessToolCallbackAdapter(tool, toolExecutionService))
                 .toArray(ToolCallback[]::new);
+    }
+
+    /** Extract {@link TokenUsage} from Spring AI's {@link ChatResponse} metadata. */
+    private static TokenUsage extractUsage(ChatResponse resp) {
+        if (resp == null || resp.getMetadata() == null) return new TokenUsage();
+        var usage = resp.getMetadata().getUsage();
+        if (usage == null) return new TokenUsage();
+        return TokenUsage.of(
+                usage.getPromptTokens(),
+                usage.getCompletionTokens() != null ? usage.getCompletionTokens() : 0L);
     }
 }

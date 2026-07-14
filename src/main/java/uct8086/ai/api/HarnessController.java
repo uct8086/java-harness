@@ -1,5 +1,6 @@
 package uct8086.ai.api;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import uct8086.ai.common.enums.PermissionMode;
 import uct8086.ai.common.model.AgentMessage;
 import uct8086.ai.common.model.ToolDescriptor;
@@ -19,7 +20,9 @@ import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.document.Document;
 import org.springframework.web.bind.annotation.*;
+import uct8086.ai.vectorstore.PgVectorEmbeddingStore;
 
 /**
  * REST API controller for the UCT8086-AI harness.
@@ -39,6 +42,10 @@ public class HarnessController {
     private final SkillRegistry skillRegistry;
     private final FileMemoryStore memoryStore;
     private final TaskManager taskManager;
+
+    /** RAG vector store (optional — disabled when pgvector is unavailable). */
+    @Autowired(required = false)
+    private PgVectorEmbeddingStore vectorStore;
 
     public HarnessController(AgentEngine agentEngine,
                              ToolRegistry toolRegistry,
@@ -190,6 +197,38 @@ public class HarnessController {
     public Map<String, Boolean> cancelTask(@PathVariable String id) {
         return Map.of("cancelled", taskManager.cancelTask(id));
     }
+
+    // ========== Knowledge (Vector Store / pgvector) ==========
+
+    @PostMapping("/knowledge/ingest")
+    public Map<String, Object> ingestKnowledge(@RequestBody IngestRequest request) {
+        if (vectorStore == null) {
+            return Map.of("success", false, "error", "VectorStore not configured (pgvector unavailable)");
+        }
+        try {
+            Document doc = new Document(request.content(),
+                    request.metadata() != null ? request.metadata() : Map.of());
+            vectorStore.add(doc);
+            log.info("Ingested document to knowledge base ({} chars)", request.content().length());
+            return Map.of("success", true);
+        } catch (Exception e) {
+            log.error("Failed to ingest document", e);
+            return Map.of("success", false, "error", e.getMessage());
+        }
+    }
+
+    @GetMapping("/knowledge/search")
+    public List<SearchResult> searchKnowledge(@RequestParam String q,
+                                              @RequestParam(defaultValue = "5") int topK) {
+        if (vectorStore == null) return List.of();
+        return vectorStore.search(q, topK).stream()
+                .map(d -> new SearchResult(d.getText(), d.getMetadata()))
+                .toList();
+    }
+
+    public record SearchResult(String content, Map<String, Object> metadata) {}
+
+    public record IngestRequest(String content, Map<String, Object> metadata) {}
 
     // ========== Request DTOs ==========
 

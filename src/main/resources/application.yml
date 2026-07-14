@@ -45,12 +45,25 @@ spring:
   # Spring AI Configuration
   ai:
     openai:
-      api-key: sk-09295f72e43c4e8ebeca60ec550d1589
+      api-key: ${SPRING_AI_OPENAI_API_KEY:}
       base-url: https://api.deepseek.com
       chat:
         options:
           model: deepseek-v4-pro
           temperature: 0.7
+      # embedding disabled — DeepSeek does not support the embeddings API
+      # embedding:
+      #   enabled: true
+      #   options:
+      #     model: text-embedding-3-small
+
+# pgvector (PostgreSQL with vector extension)
+pgvector:
+  datasource:
+    url: jdbc:postgresql://${PGVECTOR_HOST:localhost}:5432/${PGVECTOR_DB:postgres}
+    username: ${PGVECTOR_USER:postgres}
+    password: ${PGVECTOR_PASSWORD:321432}
+    driver-class-name: org.postgresql.Driver
 
 # UCT8086-AI Harness Configuration
 uct8086:
