@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UCT8086-AI 架构图 · Open Agent Harness</title>
+<style>
+  :root{
+    --bg:#0f1419; --panel:#1a2230; --panel2:#222d3f; --line:#3a4a63;
+    --txt:#e6edf3; --mut:#8b9bb4; --accent:#4fc3f7; --accent2:#7e57c2;
+    --green:#4caf50; --orange:#ff9800; --red:#f44336; --yellow:#ffeb3b;
+    --blue:#2196f3; --teal:#26a69a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);line-height:1.55;padding:32px}
+  h1{font-size:28px;background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:6px}
+  .sub{color:var(--mut);font-size:14px;margin-bottom:28px}
+  h2{font-size:20px;margin:36px 0 16px;padding-bottom:8px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  h2 .tag{font-size:11px;padding:2px 8px;border-radius:10px;background:var(--panel2);color:var(--accent);font-weight:600}
+
+  /* 分层架构 */
+  .stack{display:flex;flex-direction:column;gap:14px}
+  .layer{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;position:relative}
+  .layer-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+  .layer-title{font-size:15px;font-weight:700;color:var(--accent)}
+  .layer-desc{font-size:12px;color:var(--mut)}
+  .nodes{display:flex;flex-wrap:wrap;gap:10px}
+  .node{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;min-width:150px;flex:1}
+  .node .n-name{font-size:13px;font-weight:600;color:var(--txt)}
+  .node .n-cls{font-size:11px;color:var(--accent);font-family:Consolas,monospace;margin-top:2px}
+  .node .n-desc{font-size:11px;color:var(--mut);margin-top:4px}
+  .node.gap{border-style:dashed;border-color:var(--orange)}
+  .node.gap .n-name{color:var(--orange)}
+  .node.ext{border-color:var(--green)}
+  .node.ext .n-cls{color:var(--green)}
+  .node.warn{border-color:var(--red)}
+  .node.warn .n-name{color:var(--red)}
+
+  .arrow{height:26px;display:flex;justify-content:center;align-items:center;color:var(--mut);font-size:18px}
+  .arrow::before{content:"▼"}
+
+  /* 关注点卡片 */
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  @media(max-width:1100px){.cards{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;border-top:3px solid var(--accent)}
+  .card.auth{border-top-color:var(--red)}
+  .card.mcp{border-top-color:var(--green)}
+  .card.mem{border-top-color:var(--accent2)}
+  .card h3{font-size:15px;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+  .card .status{font-size:11px;padding:2px 8px;border-radius:10px;display:inline-block;margin-bottom:10px}
+  .st-miss{background:rgba(244,67,54,.15);color:var(--red)}
+  .st-stub{background:rgba(255,152,0,.15);color:var(--orange)}
+  .st-ok{background:rgba(76,175,80,.15);color:var(--green)}
+  .card ul{list-style:none;font-size:12px;color:var(--mut)}
+  .card ul li{padding:4px 0 4px 16px;position:relative}
+  .card ul li::before{content:"▸";position:absolute;left:0;color:var(--accent)}
+  .card .code{font-family:Consolas,monospace;font-size:11px;background:var(--bg);padding:8px;border-radius:6px;margin-top:8px;color:var(--teal);overflow-x:auto}
+  .card .suggest{margin-top:10px;padding-top:10px;border-top:1px dashed var(--line);font-size:12px;color:var(--yellow)}
+  .card .suggest b{color:var(--yellow)}
+
+  /* 流程图 */
+  .flow{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+  .step{flex:1;min-width:130px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;text-align:center;position:relative}
+  .step .s-no{font-size:10px;color:var(--accent);font-weight:700}
+  .step .s-t{font-size:12px;font-weight:600;margin:4px 0}
+  .step .s-c{font-size:10px;color:var(--mut);font-family:Consolas,monospace}
+  .sep{display:flex;align-items:center;color:var(--mut);padding:0 4px;font-size:14px}
+
+  /* 管道 */
+  .pipe{display:flex;flex-direction:column;gap:0;max-width:520px;margin:0 auto}
+  .pstep{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 16px;display:flex;align-items:center;gap:12px;position:relative}
+  .pstep .p-no{width:26px;height:26px;border-radius:50%;background:var(--accent);color:var(--bg);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0}
+  .pstep.deny .p-no{background:var(--red)}
+  .pstep.exec .p-no{background:var(--green)}
+  .pstep .p-t{font-size:13px;font-weight:600}
+  .pstep .p-c{font-size:11px;color:var(--mut);font-family:Consolas,monospace}
+  .parrow{text-align:center;color:var(--mut);font-size:14px;line-height:1;padding:4px 0}
+
+  /* 图例 */
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin-bottom:8px}
+  .legend span{display:flex;align-items:center;gap:6px}
+  .dot{width:12px;height:12px;border-radius:3px;display:inline-block}
+  .d-miss{background:var(--red)}.d-stub{background:var(--orange)}.d-ok{background:var(--green)}.d-ext{background:var(--blue)}
+
+  table{width:100%;border-collapse:collapse;font-size:12px;background:var(--panel);border-radius:12px;overflow:hidden}
+  th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line)}
+  th{background:var(--panel2);color:var(--accent);font-weight:600}
+  td code{color:var(--teal);font-family:Consolas,monospace;font-size:11px}
+  .footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:var(--mut);font-size:12px;text-align:center}
+</style>
+</head>
+<body>
+
+<h1>UCT8086-AI · Open Agent Harness 架构图</h1>
+<div class="sub">Spring Boot 4.0 + Spring AI 2.0 ｜ 59 个 Java 类 ｜ 端口 9081 ｜ LLM: DeepSeek (OpenAI 兼容协议)</div>
+
+<div class="legend">
+  <span><i class="dot d-ok"></i>已实现</span>
+  <span><i class="dot d-stub"></i>占位/Stub</span>
+  <span><i class="dot d-miss"></i>缺失（待建设）</span>
+  <span><i class="dot d-ext"></i>外部系统</span>
+</div>
+
+<!-- ============ 分层架构总览 ============ -->
+<h2>一、分层架构总览 <span class="tag">自上而下</span></h2>
+<div class="stack">
+
+  <!-- L1 调用方 -->
+  <div class="layer">
+    <div class="layer-head">
+      <span class="layer-title">L1 · 调用方</span>
+      <span class="layer-desc">HTTP 客户端 / IDE 插件 / 上游服务</span>
+    </div>
+    <div class="nodes">
+      <div class="node ext"><div class="n-name">调用方</div><div class="n-cls">POST /api/chat</div><div class="n-desc">发起 Agent 请求</div></div>
+      <div class="node ext"><div class="n-name">管理员</div><div class="n-cls">GET/PUT /api/permission</div><div class="n-desc">切换权限模式</div></div>
+    </div>
+  </div>
+
+  <!-- L2 鉴权层（缺失） -->
+  <div class="arrow"></div>
+  <div class="layer" style="border-color:var(--red)">
+    <div class="layer-head">
+      <span class="layer-title" style="color:var(--red)">L2 · API 鉴权层 ⚠ 当前缺失</span>
+      <span class="layer-desc">无 Spring Security / 无 Filter / 无 API Key 校验 — 所有端点裸奔</span>
+    </div>
+    <div class="nodes">
+      <div class="node gap"><div class="n-name">认证 Filter（待建）</div><div class="n-cls">ApiKeyAuthFilter</div><div class="n-desc">校验请求头 X-API-Key / Bearer Token</div></div>
+      <div class="node gap"><div class="n-name">授权拦截器（待建）</div><div class="n-cls">AuthorizationInterceptor</div><div class="n-desc">RBAC 角色权限控制</div></div>
+      <div class="node gap"><div class="n-name">速率限制（待建）</div><div class="n-cls">RateLimiter</div><div class="n-desc">防滥用 / 配额管理</div></div>
+    </div>
+  </div>
+
+  <div class="arrow"></div>
+  <!-- L3 API 控制器 -->
+  <div class="layer">
+    <div class="layer-head">
+      <span class="layer-title">L3 · API 控制器层</span>
+      <span class="layer-desc">REST 入口，暴露 17 个端点</span>
+    </div>
+    <div class="nodes">
+      <div class="node"><div class="n-name">HarnessController</div><div class="n-cls">api.HarnessController</div><div class="n-desc">@RestController("/api") — chat / sessions / tools / permission / cost / skills / memory / tasks</div></div>
+    </div>
+  </div>
+
+  <div class="arrow"></div>
+  <!-- L4 Agent 引擎 -->
+  <div class="layer" style="border-color:var(--accent)">
+    <div class="layer-head">
+      <span class="layer-title">L4 · Agent 引擎层（核心）</span>
+      <span class="layer-desc">Agent Loop · ChatClient 驱动 · 工具回调适配</span>
+    </div>
+    <div class="nodes">
+      <div class="node"><div class="n-name">Agent 引擎</div><div class="n-cls">core.engine.AgentEngine</div><div class="n-desc">execute() 编排会话→提示词→LLM→工具循环</div></div>
+      <div class="node"><div class="n-name">工具回调适配器</div><div class="n-cls">core.engine.HarnessToolCallbackAdapter</div><div class="n-desc">适配 HarnessTool→Spring AI ToolCallback，ThreadLocal 传上下文</div></div>
+      <div class="node"><div class="n-name">循环结果</div><div class="n-cls">core.engine.engine.core.uct8086.ai.AgentLoopResult</div><div class="n-desc">封装响应 / 迭代次数 / Token 用量</div></div>
+    </div>
+  </div>
+
+  <div class="arrow"></div>
+  <!-- L5 核心服务 -->
+  <div class="layer">
+    <div class="layer-head">
+      <span class="layer-title">L5 · 核心服务层</span>
+      <span class="layer-desc">权限 · 钩子 · 会话 · 提示词 · 成本 · 协调 · 命令</span>
+    </div>
+    <div class="nodes">
+      <div class="node"><div class="n-name">权限校验</div><div class="n-cls">core.permission.DefaultPermissionChecker</div><div class="n-desc">4 模式 + 危险命令黑名单 + 路径规则</div></div>
+      <div class="node"><div class="n-name">钩子管理</div><div class="n-cls">core.hook.HookManager</div><div class="n-desc">PreToolUse / PostToolUse 拦截</div></div>
+      <div class="node"><div class="n-name">会话管理</div><div class="n-cls">core.session.SessionManager</div><div class="n-desc">内存会话 + 消息历史（⚠ 不持久化）</div></div>
+      <div class="node"><div class="n-name">提示词组装</div><div class="n-cls">core.prompt.PromptAssembler</div><div class="n-desc">注入 tools/skills/memory/安全规则</div></div>
+      <div class="node"><div class="n-name">成本追踪</div><div class="n-cls">core.cost.CostTracker</div><div class="n-desc">Token 用量统计</div></div>
+      <div class="node"><div class="n-name">多 Agent 协调</div><div class="n-cls">coordinator.AgentCoordinator</div><div class="n-desc">子 Agent / 团队编排</div></div>
+    </div>
+  </div>
+
+  <div class="arrow"></div>
+  <!-- L6 工具 + MCP -->
+  <div class="layer">
+    <div class="layer-head">
+      <span class="layer-title">L6 · 工具层 + MCP 集成</span>
+      <span class="layer-desc">工具注册表 · 内置工具 · MCP 客户端（接入兄弟团队服务）</span>
+    </div>
+    <div class="nodes">
+      <div class="node"><div class="n-name">工具注册表</div><div class="n-cls">core.tool.ToolRegistry</div><div class="n-desc">动态注册/发现，支持插件与 MCP 工具挂载</div></div>
+      <div class="node"><div class="n-name">工具执行管道</div><div class="n-cls">core.tool.DefaultToolExecutionService</div><div class="n-desc">权限→前置Hook→执行→后置Hook</div></div>
+      <div class="node"><div class="n-name">文件读取</div><div class="n-cls">core.tools.FileReadTool</div></div>
+      <div class="node"><div class="n-name">文件写入</div><div class="n-cls">core.tools.FileWriteTool</div></div>
+      <div class="node"><div class="n-name">Bash 执行</div><div class="n-cls">core.tools.BashTool</div></div>
+      <div class="node"><div class="n-name">Glob 搜索</div><div class="n-cls">core.tools.GlobTool</div></div>
+      <div class="node"><div class="n-name">Grep 搜索</div><div class="n-cls">core.tools.GrepTool</div></div>
+      <div class="node warn"><div class="n-name">MCP 客户端 ⚠ Stub</div><div class="n-cls">mcp.McpClientService</div><div class="n-desc">连接兄弟团队 MCP Server（占位实现）</div></div>
+    </div>
+  </div>
+
+  <div class="arrow"></div>
+  <!-- L7 外部 + 持久化 -->
+  <div class="layer">
+    <div class="layer-head">
+      <span class="layer-title">L7 · 外部服务 + 持久化层</span>
+      <span class="layer-desc">LLM · 兄弟团队 MCP Server · 文件系统 · 记忆文件</span>
+    </div>
+    <div class="nodes">
+      <div class="node ext"><div class="n-name">LLM 大模型</div><div class="n-cls">api.deepseek.com</div><div class="n-desc">deepseek-v4-pro · OpenAI 兼容协议</div></div>
+      <div class="node ext"><div class="n-name">兄弟团队 MCP Server</div><div class="n-cls">stdio / HTTP 传输</div><div class="n-desc">外部工具能力（DB/部署/监控…）</div></div>
+      <div class="node ext"><div class="n-name">文件系统</div><div class="n-cls">working-directory</div><div class="n-desc">${user.dir} 工作目录</div></div>
+      <div class="node"><div class="n-name">记忆持久化</div><div class="n-cls">~/.uct8086/MEMORY.md</div><div class="n-desc">Markdown 持久化 + 内存索引</div></div>
+    </div>
+  </div>
+
+  <!-- 横向：skills / tasks / command -->
+  <div class="layer">
+    <div class="layer-head">
+      <span class="layer-title">横切组件</span>
+      <span class="layer-desc">技能 · 后台任务 · 斜杠命令 · 配置</span>
+    </div>
+    <div class="nodes">
+      <div class="node"><div class="n-name">技能系统</div><div class="n-cls">skills.SkillLoader / SkillRegistry</div><div class="n-desc">动态加载技能，注入提示词</div></div>
+      <div class="node"><div class="n-name">后台任务</div><div class="n-cls">tasks.TaskManager</div><div class="n-desc">子 Agent 异步执行</div></div>
+      <div class="node"><div class="n-name">斜杠命令</div><div class="n-cls">core.command.CommandRegistry</div><div class="n-desc">用户命令解析</div></div>
+      <div class="node"><div class="n-name">配置</div><div class="n-cls">core.config.HarnessProperties</div><div class="n-desc">permission-mode/max-turns/retry…</div></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ============ Agent Loop 数据流 ============ -->
+<h2>二、Agent Loop 数据流 <span class="tag">核心链路</span></h2>
+<div class="flow">
+  <div class="step"><div class="s-no">①</div><div class="s-t">HTTP 请求</div><div class="s-c">POST /api/chat</div></div>
+  <div class="sep">→</div>
+  <div class="step"><div class="s-no">②</div><div class="s-t">会话获取</div><div class="s-c">SessionManager</div></div>
+  <div class="sep">→</div>
+  <div class="step"><div class="s-no">③</div><div class="s-t">组装提示词</div><div class="s-c">PromptAssembler</div></div>
+  <div class="sep">→</div>
+  <div class="step"><div class="s-no">④</div><div class="s-t">构建工具回调</div><div class="s-c">ToolRegistry→Adapter</div></div>
+  <div class="sep">→</div>
+  <div class="step"><div class="s-no">⑤</div><div class="s-t">调用 LLM</div><div class="s-c">ChatClient.call()</div></div>
+  <div class="sep">↻</div>
+  <div class="step"><div class="s-no">⑥</div><div class="s-t">工具调用</div><div class="s-c">ToolCallback.call()</div></div>
+  <div class="sep">→</div>
+  <div class="step"><div class="s-no">⑦</div><div class="s-t">记录响应</div><div class="s-c">session+CostTracker</div></div>
+</div>
+<div style="margin-top:10px;font-size:12px;color:var(--mut);text-align:center">
+  ⑤↻⑥ 循环：LLM 返回工具调用 → 执行工具 → 结果回传 LLM → 继续推理，直到 LLM 不再请求工具或达到 max-turns(50)
+</div>
+
+<!-- ============ 工具执行管道 ============ -->
+<h2>三、工具执行管道 <span class="tag">DefaultToolExecutionService</span></h2>
+<div class="pipe">
+  <div class="pstep"><div class="p-no">1</div><div><div class="p-t">查找工具</div><div class="p-c">ToolRegistry.getTool(name)</div></div></div>
+  <div class="parrow">▼</div>
+  <div class="pstep deny"><div class="p-no">2</div><div><div class="p-t">权限校验</div><div class="p-c">PermissionChecker.check() — 模式/危险命令/路径规则，不通过抛 PermissionDeniedException</div></div></div>
+  <div class="parrow">▼</div>
+  <div class="pstep deny"><div class="p-no">3</div><div><div class="p-t">前置钩子 PreToolUse</div><div class="p-c">HookManager.firePreToolUse() — 可阻止执行</div></div></div>
+  <div class="parrow">▼</div>
+  <div class="pstep exec"><div class="p-no">4</div><div><div class="p-t">执行工具</div><div class="p-c">HarnessTool.execute(args, ctx) — FileRead/Write/Bash/Glob/Grep</div></div></div>
+  <div class="parrow">▼</div>
+  <div class="pstep"><div class="p-no">5</div><div><div class="p-t">后置钩子 PostToolUse</div><div class="p-c">HookManager.firePostToolUse() — 可修改结果</div></div></div>
+  <div class="parrow">▼</div>
+  <div class="pstep"><div class="p-no">✓</div><div><div class="p-t">返回 model.common.uct8086.ai.ToolResult</div><div class="p-c">output() 回传 LLM 继续推理</div></div></div>
+</div>
+
+<!-- ============ 三大关注点 ============ -->
+<h2>四、三大关注点详解</h2>
+<div class="cards">
+
+  <!-- 鉴权 -->
+  <div class="card auth">
+    <h3>🔐 鉴权（Authentication & Authorization）</h3>
+    <span class="status st-miss">现状：HTTP 层无鉴权</span>
+    <ul>
+      <li><b>HTTP API 层</b>：完全裸奔，无 Spring Security / Filter / Interceptor</li>
+      <li>任何能访问 9081 端口的人均可调用 /api/chat 执行 Bash、读写文件</li>
+      <li>仅存在<b>工具执行层</b>权限：DefaultPermissionChecker</li>
+      <li>4 种模式：DEFAULT(写需确认) / AUTO(全放行) / PLAN_MODE(禁写) / READ_ONLY(只读)</li>
+      <li>危险命令黑名单：rm -rf、mkfs、DROP TABLE 等</li>
+      <li>路径规则：deny /etc、~/.ssh、~/.aws 等敏感目录</li>
+    </ul>
+    <div class="code">PermissionChecker.check(tool, args, ctx)
+  → 模式判断 → 危险命令扫描 → 路径规则匹配
+  → allowed / denied / askUser</div>
+    <div class="suggest"><b>建议建设</b>：<br>① Spring Security + API Key Filter（X-API-Key 头）<br>② JWT Bearer Token 鉴权（对接企业 SSO）<br>③ RBAC 角色控制（admin/developer/viewer）<br>④ 请求审计日志 + 速率限制<br>⑤ 区分「API 调用方鉴权」与「工具执行授权」两层</div>
+  </div>
+
+  <!-- MCP -->
+  <div class="card mcp">
+    <h3>🔌 MCP 集成（兄弟团队服务）</h3>
+    <span class="status st-stub">现状：Stub 占位实现</span>
+    <ul>
+      <li><b>McpClientService</b>：方法体均为占位，返回空列表/未实现字符串</li>
+      <li>已引入依赖 <code>spring-ai-mcp</code>（pom.xml）</li>
+      <li>能力：<code>listServers()</code> / <code>listTools(server)</code></li>
+      <li><code>callTool(server, tool, args)</code> / <code>readResource(server, uri)</code></li>
+      <li>支持 stdio / HTTP 两种传输（设计层面）</li>
+      <li><b>接入点</b>：ToolRegistry 支持动态注册，MCP 工具可挂载进去</li>
+    </ul>
+    <div class="code">兄弟团队 MCP Server
+  ↓ listTools() 发现能力
+McpClientService.callTool(server, tool, args)
+  ↓ 注册为 HarnessTool
+ToolRegistry.register(mcpTool)
+  ↓ Agent 可像内置工具一样调用</div>
+    <div class="suggest"><b>建议建设</b>：<br>① 基于 Spring AI MCP Client 实现真实连接<br>② application.yml 配置多 MCP Server（兄弟团队服务清单）<br>③ 启动时自动发现 MCP 工具并注册到 ToolRegistry<br>④ MCP 工具同样走权限+Hook 管道<br>⑤ MCP Server 健康检查 + 断线重连</div>
+  </div>
+
+  <!-- 记忆 -->
+  <div class="card mem">
+    <h3>🧠 记忆管理（Memory）</h3>
+    <span class="status st-ok">现状：已实现（文件持久化）</span>
+    <ul>
+      <li><b>FileMemoryStore</b> 实现 MemoryStore 接口</li>
+      <li>持久化路径：<code>~/.uct8086/MEMORY.md</code>（Markdown）</li>
+      <li>内存 ConcurrentHashMap 索引 + 文件双写</li>
+      <li>memory.uct8086.ai.MemoryEntry：id / category / content / createdAt / updatedAt</li>
+      <li>支持分类管理、关键词搜索、增删改查</li>
+      <li>通过 <b>PromptAssembler</b> 注入系统提示词 additionalContext</li>
+      <li>API：<code>GET/POST /api/memory</code>、<code>/api/memory/search</code></li>
+    </ul>
+    <div class="code">记忆注入流程：
+memoryStore.search(keyword)
+  → 作为 additionalContext
+  → PromptAssembler.buildSystemPrompt(ctx)
+  → "Additional Context" 段落拼入系统提示词
+  → LLM 据此决策</div>
+    <div class="suggest"><b>建议增强</b>：<br>① 向量化检索（Embedding + 相似度）替代关键词匹配<br>② 接入向量库（Milvus/PgVector）<br>③ 会话历史持久化（当前 SessionManager 仅内存，重启丢失）<br>④ 记忆衰减/过期机制<br>⑤ 按 session/user 维度隔离记忆</div>
+  </div>
+
+</div>
+
+<!-- ============ 模块清单 ============ -->
+<h2>五、核心模块清单 <span class="tag">59 类</span></h2>
+<table>
+  <tr><th>包</th><th>核心类</th><th>职责</th></tr>
+  <tr><td>api</td><td><code>HarnessController</code></td><td>REST 入口，17 个端点</td></tr>
+  <tr><td>core.engine</td><td><code>AgentEngine</code> / <code>HarnessToolCallbackAdapter</code></td><td>Agent 循环 + 工具回调适配</td></tr>
+  <tr><td>core.tool</td><td><code>ToolRegistry</code> / <code>DefaultToolExecutionService</code> / <code>AbstractTool</code></td><td>工具注册 + 执行管道</td></tr>
+  <tr><td>core.tools</td><td><code>BashTool</code> / <code>FileReadTool</code> / <code>FileWriteTool</code> / <code>GlobTool</code> / <code>GrepTool</code></td><td>5 个内置工具</td></tr>
+  <tr><td>core.permission</td><td><code>DefaultPermissionChecker</code></td><td>工具执行权限（4 模式）</td></tr>
+  <tr><td>core.hook</td><td><code>HookManager</code> / <code>ToolHook</code></td><td>Pre/Post 工具钩子</td></tr>
+  <tr><td>core.session</td><td><code>SessionManager</code></td><td>会话+消息历史（内存）</td></tr>
+  <tr><td>core.prompt</td><td><code>PromptAssembler</code></td><td>系统提示词组装</td></tr>
+  <tr><td>core.cost</td><td><code>CostTracker</code></td><td>Token 成本统计</td></tr>
+  <tr><td>core.command</td><td><code>CommandRegistry</code></td><td>斜杠命令</td></tr>
+  <tr><td>core.config</td><td><code>HarnessProperties</code></td><td>配置属性绑定</td></tr>
+  <tr><td>coordinator</td><td><code>AgentCoordinator</code> / <code>TeamRegistry</code></td><td>多 Agent 协调</td></tr>
+  <tr><td>mcp</td><td><code>McpClientService</code></td><td>MCP 客户端（Stub）</td></tr>
+  <tr><td>memory</td><td><code>FileMemoryStore</code> / <code>memory.uct8086.ai.MemoryEntry</code></td><td>记忆持久化</td></tr>
+  <tr><td>skills</td><td><code>SkillLoader</code> / <code>SkillRegistry</code></td><td>技能加载</td></tr>
+  <tr><td>tasks</td><td><code>TaskManager</code> / <code>tasks.uct8086.ai.BackgroundTask</code></td><td>后台任务</td></tr>
+  <tr><td>common</td><td><code>enums</code> / <code>model</code> / <code>exception</code></td><td>枚举/DTO/异常</td></tr>
+</table>
+
+<div class="footer">
+  UCT8086-AI Architecture · 基于 Spring Boot 4.0 + Spring AI 2.0 · 生成于项目源码静态分析
+</div>
+
+</body>
+</html>

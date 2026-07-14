@@ -1,0 +1,478 @@
+# UCT8086-AI: Open Agent Harness
+
+> 基于 Java 21 + Spring Boot 4.0 + Spring AI 2.0 构建的 AI Agent Harness 基础设施，参考 [OpenHarness](https://github.com/HKUDS/OpenHarness) 架构设计，提供完整的 Agent 工程化能力。
+
+## 项目简介
+
+UCT8086-AI（Open Agent Harness）是一个用 Java 技术栈实现的 AI Agent 管理框架，目标是提供类似 OpenHarness 的全套 Harness 流程管控能力，涵盖工具管理、权限控制、Hook 机制、Agent 引擎、Prompt 组装、会话管理、成本追踪等完整 AI 工程化能力。
+
+### 核心能力
+
+| 能力 | 说明 |
+|------|------|
+| **Agent Loop** | 查询 → 模型调用 → 工具执行 → 结果回传 → 循环直到完成 |
+| **Tool Registry** | 工具注册、发现、分类管理，支持动态注册插件和 MCP 工具 |
+| **Permission System** | 四级安全模式（DEFAULT / AUTO / PLAN_MODE / READ_ONLY），路径级规则控制，危险命令拦截 |
+| **Hook System** | PreToolUse / PostToolUse 生命周期钩子，支持阻止执行或修改结果 |
+| **skills.uct8086.ai.Skill System** | 基于 Markdown 的技能加载，支持 YAML frontmatter，多目录加载 |
+| **Memory System** | 持久化跨会话记忆，基于 MEMORY.md 文件存储 |
+| **Session Management** | 会话创建、恢复、历史记录、消息追踪 |
+| **Cost Tracking** | Token 用量和成本追踪，按会话和全局维度统计 |
+| **Multi-Agent Coordination** | 子 Agent 生成、团队管理、任务委派 |
+| **MCP Client** | Model Context Protocol 客户端集成 |
+| **Slash Commands** | 斜杠命令系统（`/help`、`/commit` 等） |
+| **REST API** | 全功能 HTTP API，暴露所有子系统 |
+
+## 技术栈
+
+| 组件 | 版本 |
+|------|------|
+| Java | 21 |
+| Spring Boot | 4.0.0 |
+| Spring AI | 2.0.0 |
+| Lombok | (Spring Boot managed) |
+| 构建工具 | Maven |
+
+## 模块结构
+
+```
+uct8086-ai/
+├── pom.xml                          # 父 POM（模块管理 + 依赖版本）
+├── uct8086-ai-common/                   # 公共模块：枚举、模型、异常
+├── uct8086-ai-core/                     # 核心模块：Agent 引擎、工具、权限、Hook、会话、成本
+├── uct8086-ai-skills/                   # 技能模块：Markdown 技能加载与注册
+├── uct8086-ai-memory/                    # 记忆模块：持久化记忆存储
+├── uct8086-ai-tasks/                    # 任务模块：后台任务管理
+├── uct8086-ai-coordinator/              # 协调模块：多 Agent 协作
+├── uct8086-ai-mcp/                      # MCP 模块：Model Context Protocol 客户端
+└── uct8086-ai-app/                      # 应用模块：Spring Boot 启动 + REST API
+```
+
+### 模块依赖关系
+
+```
+uct8086-ai-app
+├── uct8086-ai-common
+├── uct8086-ai-core
+│   └── uct8086-ai-common
+├── uct8086-ai-skills
+│   └── uct8086-ai-common
+├── uct8086-ai-memory
+│   └── uct8086-ai-common
+├── uct8086-ai-tasks
+│   └── uct8086-ai-common
+├── uct8086-ai-coordinator
+│   ├── uct8086-ai-common
+│   └── uct8086-ai-tasks
+└── uct8086-ai-mcp
+    └── uct8086-ai-common
+```
+
+## 架构设计
+
+### Agent Loop 流程
+
+```
+用户输入 Prompt
+      │
+      ▼
+┌─────────────┐
+│ PromptAssembler │  组装系统提示（Agent 身份 + 工具描述 + 技能 + 记忆 + 安全指南）
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│ SessionManager │  创建或恢复会话，记录消息历史
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│  ChatClient  │  调用 Spring AI ChatClient，携带 ToolCallback
+│  (Spring AI) │
+└──────┬──────┘
+       │
+       ▼ (模型请求工具调用)
+┌──────────────────────────────────────────┐
+│        HarnessToolCallbackAdapter         │  适配 HarnessTool → Spring AI ToolCallback
+│                    │                      │
+│        ┌───────────▼──────────┐           │
+│        │ ToolExecutionService  │           │
+│        │    (执行管线)          │           │
+│        │  1. Permission Check  │           │
+│        │  2. PreToolUse Hook   │           │
+│        │  3. Execute Tool      │           │
+│        │  4. PostToolUse Hook  │           │
+│        └──────────────────────┘           │
+└──────────────────────────────────────────┘
+       │
+       ▼
+┌─────────────┐
+│ CostTracker  │  记录 Token 用量
+└─────────────┘
+       │
+       ▼
+   返回结果
+```
+
+### 工具执行管线
+
+每次工具调用都会经过完整的管线：
+
+1. **Permission Check** — 检查权限模式、路径规则、危险命令
+2. **PreToolUse Hook** — 执行前置钩子，可阻止执行
+3. **Execute Tool** — 执行工具逻辑
+4. **PostToolUse Hook** — 执行后置钩子，可修改结果
+
+### 权限模式
+
+| 模式 | 行为 |
+|------|------|
+| `DEFAULT` | 写操作前询问用户确认（日常开发模式） |
+| `AUTO` | 自动允许所有操作（沙箱环境） |
+| `PLAN_MODE` | 阻止所有写操作（审查模式） |
+| `READ_ONLY` | 仅允许只读操作 |
+
+### 内置工具
+
+| 工具名 | 类别 | 只读 | 说明 |
+|--------|------|------|------|
+| `bash` | SHELL | 否 | 执行 Shell 命令，支持超时控制 |
+| `read_file` | FILE_IO | 是 | 读取文件内容，支持路径解析和截断 |
+| `write_file` | FILE_IO | 否 | 写入文件，支持追加模式 |
+| `glob` | FILE_IO | 是 | 按 Glob 模式查找文件 |
+| `grep` | SEARCH | 是 | 正则搜索文件内容 |
+
+## 快速开始
+
+### 环境要求
+
+- JDK 21+
+- Maven 3.8+
+
+### 构建项目
+
+```bash
+# 设置 JAVA_HOME 指向 JDK 21
+export JAVA_HOME=/path/to/jdk-21
+
+# 编译所有模块
+mvn clean compile
+
+# 打包
+mvn clean package -DskipTests
+```
+
+### 配置
+
+编辑 `uct8086-ai-app/src/main/resources/application.yml`：
+
+```yaml
+spring:
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:your-api-key-here}
+      model: ${AI_MODEL:gpt-4o}
+      temperature: 0.7
+
+uct8086:
+  ai:
+    permission-mode: DEFAULT        # DEFAULT | AUTO | PLAN_MODE | READ_ONLY
+    max-turns: 50                    # Agent Loop 最大迭代次数
+    retry-enabled: true             # API 重试
+    max-retries: 3
+    retry-delay-ms: 1000
+    parallel-tool-execution: true   # 并行工具执行
+    context-compression: true       # 上下文压缩
+    compression-threshold: 100000   # 压缩阈值（token 数）
+    working-directory: ${user.dir}  # 工作目录
+```
+
+### 运行
+
+```bash
+# 设置 API Key
+export OPENAI_API_KEY=your-api-key
+
+# 启动应用
+mvn spring-boot:run -pl uct8086-ai-app
+```
+
+应用启动后，REST API 在 `http://localhost:9081` 可用。
+
+## REST API
+
+### Agent 对话
+
+```bash
+# 发送对话
+curl -X POST http://localhost:9081/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "列出当前目录下的文件", "sessionId": null}'
+
+# 带额外上下文对话
+curl -X POST http://localhost:8080/api/chat-with-context \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "分析这段代码", "sessionId": null, "additionalContext": "..."}'
+```
+
+### 会话管理
+
+```bash
+# 创建会话
+curl -X POST "http://localhost:8080/api/sessions?name=my-session"
+
+# 列出会话
+curl http://localhost:8080/api/sessions
+
+# 删除会话
+curl -X DELETE http://localhost:8080/api/sessions/{id}
+```
+
+### 工具与权限
+
+```bash
+# 列出已注册工具
+curl http://localhost:8080/api/tools
+
+# 查看当前权限模式
+curl http://localhost:8080/api/permission/mode
+
+# 切换权限模式
+curl -X PUT "http://localhost:8080/api/permission/mode?mode=AUTO"
+```
+
+### 成本追踪
+
+```bash
+# 总成本
+curl http://localhost:8080/api/cost/total
+
+# 按会话查询成本
+curl http://localhost:8080/api/cost/session/{sessionId}
+```
+
+### 技能与记忆
+
+```bash
+# 列出技能
+curl http://localhost:8080/api/skills
+
+# 列出记忆
+curl http://localhost:8080/api/memory
+
+# 添加记忆
+curl -X POST http://localhost:8080/api/memory \
+  -H "Content-Type: application/json" \
+  -d '{"category": "project", "content": "使用 Maven 构建系统"}'
+
+# 搜索记忆
+curl "http://localhost:8080/api/memory/search?keyword=Maven"
+```
+
+### 后台任务
+
+```bash
+# 列出任务
+curl http://localhost:8080/api/tasks
+
+# 查看任务详情
+curl http://localhost:8080/api/tasks/{id}
+
+# 取消任务
+curl -X DELETE http://localhost:8080/api/tasks/{id}
+```
+
+## 扩展开发
+
+### 自定义工具
+
+实现 `HarnessTool` 接口或继承 `AbstractTool`，并注册为 Spring Bean：
+
+```java
+@Component
+public class MyCustomTool extends AbstractTool {
+
+    public MyCustomTool() {
+        super("my_tool",
+              "描述这个工具的用途，让模型知道何时使用",
+              ToolCategory.META,    // FILE_IO | SHELL | SEARCH | WEB | MCP | TASK | AGENT | META
+              false);               // 是否只读
+    }
+
+    @Override
+    protected model.common.uct8086.ai.ToolResult doExecute(Map<String, Object> arguments,
+                                   model.common.uct8086.ai.ToolExecutionContext context) throws Exception {
+        String input = requireString(arguments, "input");
+        // 工具逻辑...
+        return model.common.uct8086.ai.ToolResult.success("result");
+    }
+}
+```
+
+工具会自动被 `HarnessCoreAutoConfiguration` 注册到 `ToolRegistry`。
+
+### 自定义 Hook
+
+实现 `ToolHook` 接口：
+
+```java
+@Component
+public class LoggingHook implements ToolHook {
+
+    @Override
+    public model.common.uct8086.ai.HookDefinition getDefinition() {
+        return new model.common.uct8086.ai.HookDefinition(
+            "log-all",              // hook 名称
+            HookPhase.PRE_TOOL_USE,  // PRE_TOOL_USE | POST_TOOL_USE
+            "*",                     // 匹配的工具名（支持通配符）
+            100                      // 优先级（数值越小越先执行）
+        );
+    }
+
+    @Override
+    public model.common.uct8086.ai.HookResult onEvent(model.common.uct8086.ai.HookContext context) {
+        // 记录日志、阻止执行或修改结果
+        return model.common.uct8086.ai.HookResult.continueExecution();
+        // 或: return model.common.uct8086.ai.HookResult.block("不允许执行此操作");
+    }
+}
+```
+
+### 自定义 Slash 命令
+
+实现 `HarnessCommand` 接口：
+
+```java
+@Component
+public class HelpCommand implements HarnessCommand {
+
+    @Override
+    public String getName() { return "help"; }
+
+    @Override
+    public String getDescription() { return "显示可用命令"; }
+
+    @Override
+    public String execute(List<String> args, Map<String, Object> context) {
+        return "Available commands: /help, /plan, /commit, ...";
+    }
+}
+```
+
+### 自定义技能
+
+创建 Markdown 文件（如 `~/.uct8086/skills/git-guide.md`）：
+
+```markdown
+---
+name: git-guide
+description: Git 操作指南和最佳实践
+---
+# Git 操作指南
+
+## 常用命令
+- `git status` — 查看状态
+- `git log --oneline` — 简洁日志
+...
+```
+
+技能会自动加载并注入到系统 Prompt 中。
+
+## 项目结构详情
+
+### uct8086-ai-common
+
+公共枚举、模型和异常定义：
+
+- **枚举**: `AgentRole`、`HookPhase`、`PermissionDecision`、`PermissionMode`、`TaskStatus`、`ToolCategory`
+- **模型**: `model.common.uct8086.ai.AgentMessage`、`model.common.uct8086.ai.HookContext`、`model.common.uct8086.ai.HookDefinition`、`model.common.uct8086.ai.HookResult`、`model.common.uct8086.ai.PathRule`、`model.common.uct8086.ai.PermissionResult`、`model.common.uct8086.ai.SessionInfo`、`model.common.uct8086.ai.TokenUsage`、`model.common.uct8086.ai.ToolDescriptor`、`model.common.uct8086.ai.ToolExecutionContext`、`model.common.uct8086.ai.ToolResult`
+- **异常**: `Uct8086Exception`、`PermissionDeniedException`、`SkillLoadException`、`ToolExecutionException`
+
+### uct8086-ai-core
+
+核心引擎和子系统：
+
+- **engine** — `AgentEngine`（Agent Loop）、`engine.core.uct8086.ai.AgentLoopResult`、`HarnessToolCallbackAdapter`（Spring AI 桥接）
+- **tool** — `ToolRegistry`、`HarnessTool` 接口、`AbstractTool`、`ToolExecutionService` 管线
+- **tools** — 内置工具：`BashTool`、`FileReadTool`、`FileWriteTool`、`GlobTool`、`GrepTool`
+- **permission** — `PermissionChecker` 接口、`DefaultPermissionChecker`（四级安全模式 + 路径规则 + 危险命令拦截）
+- **hook** — `HookManager`、`ToolHook` 接口（PreToolUse/PostToolUse 生命周期）
+- **prompt** — `PromptAssembler`（系统提示组装）
+- **session** — `SessionManager`（会话管理 + 消息历史）
+- **cost** — `CostTracker`（Token 用量与成本追踪）
+- **command** — `CommandRegistry`、`HarnessCommand` 接口（Slash 命令系统）
+- **config** — `HarnessProperties`（`uct8086.ai.*` 配置）、`HarnessCoreAutoConfiguration`（自动注册工具）
+
+### uct8086-ai-skills
+
+技能加载与注册系统：
+
+- `skills.uct8086.ai.Skill` — 技能 record（name, description, content, sourcePath, metadata）
+- `SkillLoader` — 从文件系统加载 Markdown 技能，解析 YAML frontmatter
+- `SkillRegistry` — 技能注册表，支持从多目录加载（`~/.uct8086/skills/`、`.uct8086/skills/`）
+
+### uct8086-ai-memory
+
+持久化记忆存储：
+
+- `memory.uct8086.ai.MemoryEntry` — 记忆条目 record（id, category, content, createdAt, updatedAt）
+- `MemoryStore` — 记忆存储接口
+- `FileMemoryStore` — 基于 MEMORY.md 文件实现，内存索引 + 文件持久化
+
+### uct8086-ai-tasks
+
+后台任务管理：
+
+- `tasks.uct8086.ai.BackgroundTask` — 后台任务 record（状态机：PENDING → RUNNING → COMPLETED/FAILED/CANCELLED）
+- `TaskManager` — 任务创建、异步执行、状态追踪、取消
+
+### uct8086-ai-coordinator
+
+多 Agent 协作：
+
+- `coordinator.uct8086.ai.Subagent` — 子 Agent record（id, name, role, systemPrompt, status）
+- `AgentCoordinator` — 子 Agent 生成、任务委派
+- `TeamRegistry` — Agent 团队注册表
+
+### uct8086-ai-mcp
+
+MCP（Model Context Protocol）客户端集成：
+
+- `McpClientService` — 连接 MCP 服务器、列出工具、调用工具、读取资源
+
+### uct8086-ai-app
+
+Spring Boot 应用入口：
+
+- `AiApplication` — 主启动类
+- `HarnessController` — REST API 控制器，暴露所有子系统
+
+## 配置参考
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `uct8086.ai.permission-mode` | `DEFAULT` | 权限模式 |
+| `uct8086.ai.max-turns` | `50` | Agent Loop 最大迭代次数 |
+| `uct8086.ai.retry-enabled` | `true` | 是否启用 API 重试 |
+| `uct8086.ai.max-retries` | `3` | 最大重试次数 |
+| `uct8086.ai.retry-delay-ms` | `1000` | 重试初始延迟（毫秒） |
+| `uct8086.ai.parallel-tool-execution` | `true` | 并行工具执行 |
+| `uct8086.ai.context-compression` | `true` | 上下文压缩 |
+| `uct8086.ai.compression-threshold` | `100000` | 压缩阈值（token） |
+| `uct8086.ai.working-directory` | `${user.dir}` | 工作目录 |
+| `uct8086.ai.model` | (null) | 模型覆盖 |
+| `uct8086.ai.temperature` | `0.7` | 温度参数 |
+| `uct8086.ai.system-prompt` | (null) | 自定义系统提示（null = 默认） |
+| `server.port` | `8080` | 服务端口 |
+
+## Todo
+
+待完成事项：
+
+- [ ] **接入 PGVector** — 集成 PostgreSQL + pgvector 扩展，实现向量化存储与语义检索，替代当前基于文件的记忆存储，支持高效的相似度搜索和 RAG 场景。
+- [ ] **Redis 缓存对话，处理长上下文** — 引入 Redis 作为会话缓存层，将对话历史与上下文数据缓存到 Redis，解决长对话场景下的上下文膨胀问题，支持滑动窗口和摘要压缩策略。
+- [ ] **优化 Memory，处理服务端 Memory** — 重构 Memory 模块，从本地文件存储升级为服务端集中式记忆管理，支持多用户/多会话的记忆隔离与共享，提供更细粒度的记忆生命周期管理（过期、优先级、衰减）。
+
+## License
+
+This project is for educational/research purposes.
