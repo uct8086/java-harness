@@ -612,4 +612,4 @@ Spring Boot 应用入口：
 
 ## License
 
-This project is for educational/research purposes.
+本项目基于 [Apache License 2.0](./LICENSE) 开源协议。
