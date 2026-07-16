@@ -14,7 +14,7 @@ UCT8086-AI（Open Agent Harness）是一个用 Java 技术栈实现的 AI Agent 
 | **Tool Registry** | 工具注册、发现、分类管理，支持动态注册插件和 MCP 工具 |
 | **Permission System** | 四级安全模式（DEFAULT / AUTO / PLAN_MODE / READ_ONLY），路径级规则控制，危险命令拦截 |
 | **Hook System** | PreToolUse / PostToolUse 生命周期钩子，支持阻止执行或修改结果 |
-| **skills.uct8086.ai.Skill System** | 基于 Markdown 的技能加载，支持 YAML frontmatter，多目录加载 |
+| **Skill System** | 基于 Markdown 的技能加载，支持 YAML frontmatter，多目录加载 |
 | **Memory System** | 持久化跨会话记忆，基于 MEMORY.md 文件存储 |
 | **Session Management** | 会话创建、恢复、历史记录、消息追踪 |
 | **Cost Tracking** | Token 用量和成本追踪，按会话和全局维度统计 |
@@ -418,6 +418,12 @@ curl -X DELETE http://localhost:8080/api/tasks/{id}
 实现 `HarnessTool` 接口或继承 `AbstractTool`，并注册为 Spring Bean：
 
 ```java
+import uct8086.ai.common.enums.ToolCategory;
+import uct8086.ai.common.model.ToolExecutionContext;
+import uct8086.ai.common.model.ToolResult;
+import uct8086.ai.core.tool.AbstractTool;
+import java.util.Map;
+
 @Component
 public class MyCustomTool extends AbstractTool {
 
@@ -429,11 +435,11 @@ public class MyCustomTool extends AbstractTool {
     }
 
     @Override
-    protected model.common.uct8086.ai.ToolResult doExecute(Map<String, Object> arguments,
-                                   model.common.uct8086.ai.ToolExecutionContext context) throws Exception {
+    protected ToolResult doExecute(Map<String, Object> arguments,
+                                   ToolExecutionContext context) throws Exception {
         String input = requireString(arguments, "input");
         // 工具逻辑...
-        return model.common.uct8086.ai.ToolResult.success("result");
+        return ToolResult.success("result");
     }
 }
 ```
@@ -445,12 +451,18 @@ public class MyCustomTool extends AbstractTool {
 实现 `ToolHook` 接口：
 
 ```java
+import uct8086.ai.common.enums.HookPhase;
+import uct8086.ai.common.model.HookContext;
+import uct8086.ai.common.model.HookDefinition;
+import uct8086.ai.common.model.HookResult;
+import uct8086.ai.core.hook.ToolHook;
+
 @Component
 public class LoggingHook implements ToolHook {
 
     @Override
-    public model.common.uct8086.ai.HookDefinition getDefinition() {
-        return new model.common.uct8086.ai.HookDefinition(
+    public HookDefinition getDefinition() {
+        return new HookDefinition(
             "log-all",              // hook 名称
             HookPhase.PRE_TOOL_USE,  // PRE_TOOL_USE | POST_TOOL_USE
             "*",                     // 匹配的工具名（支持通配符）
@@ -459,10 +471,10 @@ public class LoggingHook implements ToolHook {
     }
 
     @Override
-    public model.common.uct8086.ai.HookResult onEvent(model.common.uct8086.ai.HookContext context) {
+    public HookResult onEvent(HookContext context) {
         // 记录日志、阻止执行或修改结果
-        return model.common.uct8086.ai.HookResult.continueExecution();
-        // 或: return model.common.uct8086.ai.HookResult.block("不允许执行此操作");
+        return HookResult.continueExecution();
+        // 或: return HookResult.block("不允许执行此操作");
     }
 }
 ```
@@ -514,14 +526,14 @@ description: Git 操作指南和最佳实践
 公共枚举、模型和异常定义：
 
 - **枚举**: `AgentRole`、`HookPhase`、`PermissionDecision`、`PermissionMode`、`TaskStatus`、`ToolCategory`
-- **模型**: `model.common.uct8086.ai.AgentMessage`、`model.common.uct8086.ai.HookContext`、`model.common.uct8086.ai.HookDefinition`、`model.common.uct8086.ai.HookResult`、`model.common.uct8086.ai.PathRule`、`model.common.uct8086.ai.PermissionResult`、`model.common.uct8086.ai.SessionInfo`、`model.common.uct8086.ai.TokenUsage`、`model.common.uct8086.ai.ToolDescriptor`、`model.common.uct8086.ai.ToolExecutionContext`、`model.common.uct8086.ai.ToolResult`
+- **模型**: `AgentMessage`、`HookContext`、`HookDefinition`、`HookResult`、`PathRule`、`PermissionResult`、`SessionInfo`、`TokenUsage`、`ToolDescriptor`、`ToolExecutionContext`、`ToolResult`（包：`uct8086.ai.common.model`）
 - **异常**: `Uct8086Exception`、`PermissionDeniedException`、`SkillLoadException`、`ToolExecutionException`
 
 ### uct8086-ai-core
 
 核心引擎和子系统：
 
-- **engine** — `AgentEngine`（Agent Loop）、`engine.core.uct8086.ai.AgentLoopResult`、`HarnessToolCallbackAdapter`（Spring AI 桥接）
+- **engine** — `AgentEngine`（Agent Loop）、`AgentLoopResult`、`HarnessToolCallbackAdapter`（Spring AI 桥接）（包：`uct8086.ai.core.engine`）
 - **tool** — `ToolRegistry`、`HarnessTool` 接口、`AbstractTool`、`ToolExecutionService` 管线
 - **tools** — 内置工具：`BashTool`、`FileReadTool`、`FileWriteTool`、`GlobTool`、`GrepTool`
 - **permission** — `PermissionChecker` 接口、`DefaultPermissionChecker`（四级安全模式 + 路径规则 + 危险命令拦截）
@@ -536,7 +548,7 @@ description: Git 操作指南和最佳实践
 
 技能加载与注册系统：
 
-- `skills.uct8086.ai.Skill` — 技能 record（name, description, content, sourcePath, metadata）
+- `Skill` — 技能 record（name, description, content, sourcePath, metadata）（包：`uct8086.ai.skills`）
 - `SkillLoader` — 从文件系统加载 Markdown 技能，解析 YAML frontmatter
 - `SkillRegistry` — 技能注册表，支持项目 `.uct8086/skills/` 目录加载
 
@@ -544,7 +556,7 @@ description: Git 操作指南和最佳实践
 
 持久化记忆存储：
 
-- `memory.uct8086.ai.MemoryEntry` — 记忆条目 record（id, category, content, createdAt, updatedAt）
+- `MemoryEntry` — 记忆条目 record（id, category, content, createdAt, updatedAt）（包：`uct8086.ai.memory`）
 - `MemoryStore` — 记忆存储接口
 - `FileMemoryStore` — 基于 MEMORY.md 文件实现，内存索引 + 文件持久化
 
@@ -552,14 +564,14 @@ description: Git 操作指南和最佳实践
 
 后台任务管理：
 
-- `tasks.uct8086.ai.BackgroundTask` — 后台任务 record（状态机：PENDING → RUNNING → COMPLETED/FAILED/CANCELLED）
+- `BackgroundTask` — 后台任务 record（状态机：PENDING → RUNNING → COMPLETED/FAILED/CANCELLED）（包：`uct8086.ai.tasks`）
 - `TaskManager` — 任务创建、异步执行、状态追踪、取消
 
 ### uct8086-ai-coordinator
 
 多 Agent 协作：
 
-- `coordinator.uct8086.ai.Subagent` — 子 Agent record（id, name, role, systemPrompt, status）
+- `Subagent` — 子 Agent record（id, name, role, systemPrompt, status）（包：`uct8086.ai.coordinator`）
 - `AgentCoordinator` — 子 Agent 生成、任务委派
 - `TeamRegistry` — Agent 团队注册表
 
