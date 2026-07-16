@@ -9,6 +9,11 @@ spring:
   application:
     name: uct8086-ai
 
+  # Disable PgVectorStore auto-config — we create our own in PgVectorConfig
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
+
   # Datasource (MySQL)
   datasource:
     url: jdbc:mysql://${MYSQL_HOST:localhost}:3306/${MYSQL_DATABASE:uct8086_ai}?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
@@ -44,6 +49,7 @@ spring:
 
   # Spring AI Configuration
   ai:
+    # Chat: DeepSeek (OpenAI compatible protocol)
     openai:
       api-key: ${SPRING_AI_OPENAI_API_KEY:}
       base-url: https://api.deepseek.com
@@ -51,11 +57,18 @@ spring:
         options:
           model: deepseek-v4-pro
           temperature: 0.7
-      # embedding disabled — DeepSeek does not support the embeddings API
-      # embedding:
-      #   enabled: true
-      #   options:
-      #     model: text-embedding-3-small
+      # DeepSeek has no embedding API — must be disabled
+      embedding:
+        enabled: false
+
+    # Embedding: local Ollama
+    ollama:
+      embedding:
+        enabled: true
+        options:
+          model: bge-m3
+      chat:
+        enabled: false
 
 # pgvector (PostgreSQL with vector extension)
 pgvector:

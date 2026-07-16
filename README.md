@@ -19,6 +19,7 @@ UCT8086-AI（Open Agent Harness）是一个用 Java 技术栈实现的 AI Agent 
 | **Session Management** | 会话创建、恢复、历史记录、消息追踪 |
 | **Cost Tracking** | Token 用量和成本追踪，按会话和全局维度统计 |
 | **Multi-Agent Coordination** | 子 Agent 生成、团队管理、任务委派 |
+| **RAG Knowledge Base** | 基于 pgvector + Ollama 的语义检索，自动注入相关文档到 Prompt |
 | **MCP Client** | Model Context Protocol 客户端集成 |
 | **Slash Commands** | 斜杠命令系统（`/help`、`/commit` 等） |
 | **REST API** | 全功能 HTTP API，暴露所有子系统 |
@@ -30,6 +31,10 @@ UCT8086-AI（Open Agent Harness）是一个用 Java 技术栈实现的 AI Agent 
 | Java | 21 |
 | Spring Boot | 4.0.0 |
 | Spring AI | 2.0.0 |
+| MySQL | 8.x（会话/消息持久化） |
+| Redis | 7.x（会话缓存） |
+| PostgreSQL + pgvector | 16+（向量存储） |
+| Ollama | `bge-m3` 模型（本地 Embedding） |
 | Lombok | (Spring Boot managed) |
 | 构建工具 | Maven |
 
@@ -132,6 +137,37 @@ uct8086-ai-app
 | `PLAN_MODE` | 阻止所有写操作（审查模式） |
 | `READ_ONLY` | 仅允许只读操作 |
 
+### RAG 知识库
+
+项目集成了基于 **pgvector + Ollama** 的 RAG（检索增强生成）能力，在每次 Agent 调用前自动从知识库检索相关文档注入到系统 Prompt 中。
+
+```
+用户 Prompt
+    │
+    ▼
+AgentEngine.enrichWithRag()
+    │
+    ├──→ Ollama bge-m3 (本地 Embedding) ──→ 将 Prompt 转为 1024 维向量
+    │
+    ├──→ PgVectorStore.similaritySearch() ──→ PostgreSQL + pgvector 余弦相似度搜索
+    │
+    ▼
+系统 Prompt + "\n\n## Relevant Documents\n" + 检索到的文档
+    │
+    ▼
+DeepSeek Chat API（生成回答）
+```
+
+**架构说明：**
+
+| 组件 | 角色 | 说明 |
+|------|------|------|
+| **DeepSeek API** | Chat | 对话生成（OpenAI 兼容协议，DeepSeek 不支持 Embedding） |
+| **Ollama `bge-m3`** | Embedding | 本地运行，将文本转为 1024 维向量，免费、数据不出内网 |
+| **PostgreSQL + pgvector** | 向量存储 | 存储知识库文档向量，支持余弦相似度搜索和 HNSW 索引 |
+
+**为什么不直接用 DeepSeek 做 Embedding？** DeepSeek 专注对话/推理模型，不提供 Embedding API。Ollama 本地补位，无需额外购买 API Key。
+
 ### 内置工具
 
 | 工具名 | 类别 | 只读 | 说明 |
@@ -148,6 +184,37 @@ uct8086-ai-app
 
 - JDK 21+
 - Maven 3.8+
+- MySQL 8.x（会话/消息持久化）
+- Redis 7.x（会话缓存）
+- PostgreSQL 16+ + pgvector 扩展（向量存储）
+- Ollama（本地 Embedding 模型）
+
+### 安装依赖服务
+
+**1. MySQL** — 手动建库：
+```sql
+CREATE DATABASE uct8086_ai CHARACTER SET utf8mb4;
+```
+表结构由 `schema.sql` 启动时自动创建。
+
+**2. Redis** — 默认 `localhost:6379`，无密码。
+
+**3. PostgreSQL + pgvector**：
+```sql
+-- 安装扩展
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS hstore;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+```
+`vector_store` 表由 `PgVectorStore` 启动时自动创建（1024 维）。
+
+**4. Ollama**（本地 Embedding）：
+```bash
+# 下载安装：https://ollama.com/download/windows
+# 拉取中文 Embedding 模型（约 1.2GB）
+ollama pull bge-m3
+```
+默认运行在 `localhost:11434`，无需额外配置。
 
 ### 构建项目
 
@@ -190,13 +257,37 @@ SPRING_AI_OPENAI_API_KEY=sk-your-deepseek-key
 ```yaml
 spring:
   ai:
+    # Chat: DeepSeek (OpenAI 兼容协议)
     openai:
-      api-key: ${SPRING_AI_OPENAI_API_KEY:}   # 从环境变量读取
+      api-key: ${SPRING_AI_OPENAI_API_KEY:}
       base-url: https://api.deepseek.com
       chat:
         options:
           model: deepseek-v4-pro
           temperature: 0.7
+      embedding:
+        enabled: false              # DeepSeek 不支持 Embedding API
+
+    # Embedding: 本地 Ollama
+    ollama:
+      embedding:
+        enabled: true
+        options:
+          model: bge-m3             # 1024 维中文 Embedding 模型
+      chat:
+        enabled: false              # Chat 只用 DeepSeek
+
+  # 排除 PgVectorStore 自动配置（手动创建，用独立 PostgreSQL 数据源）
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
+
+# pgvector 数据源（独立于 MySQL 主数据源）
+pgvector:
+  datasource:
+    url: jdbc:postgresql://${PGVECTOR_HOST:localhost}:5432/${PGVECTOR_DB:postgres}
+    username: ${PGVECTOR_USER:postgres}
+    password: ${PGVECTOR_PASSWORD:321432}
 
 uct8086:
   ai:
@@ -292,6 +383,20 @@ curl -X POST http://localhost:8080/api/memory \
 # 搜索记忆
 curl "http://localhost:8080/api/memory/search?keyword=Maven"
 ```
+
+### RAG 知识库
+
+```bash
+# 摄入文档到知识库（自动向量化并存入 pgvector）
+curl -X POST http://localhost:8080/api/knowledge/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"content": "公司年假政策：入职满一年享5天年假...", "metadata": {"source": "hr-handbook"}}'
+
+# 语义搜索知识库
+curl "http://localhost:8080/api/knowledge/search?q=年假怎么算&topK=5"
+```
+
+摄入的文档会被 Ollama `bge-m3` 转为向量存入 PostgreSQL。Agent 每次对话时自动检索 Top-3 相关文档注入 Prompt。
 
 ### 后台任务
 
@@ -487,7 +592,11 @@ Spring Boot 应用入口：
 | `uct8086.ai.model` | (null) | 模型覆盖 |
 | `uct8086.ai.temperature` | `0.7` | 温度参数 |
 | `uct8086.ai.system-prompt` | (null) | 自定义系统提示（null = 默认） |
-| `server.port` | `8080` | 服务端口 |
+| `server.port` | `9081` | 服务端口 |
+| `spring.ai.openai.embedding.enabled` | `false` | DeepSeek 不支持 Embedding，必须关闭 |
+| `spring.ai.ollama.embedding.options.model` | `bge-m3` | Ollama Embedding 模型（1024 维） |
+| `spring.ai.ollama.chat.enabled` | `false` | Ollama 不用于 Chat，只用 Embedding |
+| `pgvector.datasource.url` | `jdbc:postgresql://localhost:5432/postgres` | PostgreSQL 连接（向量存储） |
 
 ## License
 

@@ -21,8 +21,10 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
-import uct8086.ai.vectorstore.PgVectorEmbeddingStore;
 
 @Component
 public class AgentEngine {
@@ -39,9 +41,10 @@ public class AgentEngine {
     private final HarnessProperties properties;
 
     @Autowired(required = false)
-    private PgVectorEmbeddingStore vectorStore;
+    @Qualifier("pgVectorStore")
+    private VectorStore vectorStore;
 
-    public AgentEngine(ChatModel chatModel,
+    public AgentEngine(@Qualifier("openAiChatModel") ChatModel chatModel,
                        ToolRegistry toolRegistry,
                        ToolExecutionService toolExecutionService,
                        PromptAssembler promptAssembler,
@@ -62,7 +65,8 @@ public class AgentEngine {
     private String enrichWithRag(String systemPrompt, String userPrompt) {
         if (vectorStore == null) return systemPrompt;
         try {
-            List<Document> docs = vectorStore.search(userPrompt, 3);
+            List<Document> docs = vectorStore.similaritySearch(
+                    SearchRequest.builder().query(userPrompt).topK(3).build());
             if (docs.isEmpty()) return systemPrompt;
             String context = docs.stream()
                     .map(Document::getText)

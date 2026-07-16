@@ -20,9 +20,11 @@ import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.web.bind.annotation.*;
-import uct8086.ai.vectorstore.PgVectorEmbeddingStore;
 
 /**
  * REST API controller for the UCT8086-AI harness.
@@ -45,7 +47,8 @@ public class HarnessController {
 
     /** RAG vector store (optional — disabled when pgvector is unavailable). */
     @Autowired(required = false)
-    private PgVectorEmbeddingStore vectorStore;
+    @Qualifier("pgVectorStore")
+    private VectorStore vectorStore;
 
     public HarnessController(AgentEngine agentEngine,
                              ToolRegistry toolRegistry,
@@ -208,7 +211,7 @@ public class HarnessController {
         try {
             Document doc = new Document(request.content(),
                     request.metadata() != null ? request.metadata() : Map.of());
-            vectorStore.add(doc);
+            vectorStore.add(List.of(doc));
             log.info("Ingested document to knowledge base ({} chars)", request.content().length());
             return Map.of("success", true);
         } catch (Exception e) {
@@ -221,7 +224,9 @@ public class HarnessController {
     public List<SearchResult> searchKnowledge(@RequestParam String q,
                                               @RequestParam(defaultValue = "5") int topK) {
         if (vectorStore == null) return List.of();
-        return vectorStore.search(q, topK).stream()
+        return vectorStore.similaritySearch(
+                        SearchRequest.builder().query(q).topK(topK).build())
+                .stream()
                 .map(d -> new SearchResult(d.getText(), d.getMetadata()))
                 .toList();
     }
