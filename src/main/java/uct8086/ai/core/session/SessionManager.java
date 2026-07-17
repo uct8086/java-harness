@@ -257,31 +257,12 @@ public class SessionManager {
     }
 
     /**
-     * Represents a conversation session (metadata only; messages live in MySQL).
-     */
-    public static class ConversationSession {
-        private final String id;
-        private final String name;
-        private final Instant createdAt;
-        private final Instant updatedAt;
-        private final int messageCount;
-
-        public ConversationSession(String id, String name, Instant createdAt, Instant updatedAt, int messageCount) {
-            this.id = id;
-            this.name = name;
-            this.createdAt = createdAt;
-            this.updatedAt = updatedAt;
-            this.messageCount = messageCount;
-        }
-
-        public String getId() { return id; }
-        public String getName() { return name; }
-        public Instant getCreatedAt() { return createdAt; }
-        public Instant getUpdatedAt() { return updatedAt; }
-        public int getMessageCount() { return messageCount; }
+         * Represents a conversation session (metadata only; messages live in MySQL).
+         */
+        public record ConversationSession(String id, String name, Instant createdAt, Instant updatedAt, int messageCount) {
 
         public SessionInfo toInfo() {
-            return new SessionInfo(id, name, createdAt, updatedAt, messageCount);
+                return new SessionInfo(id, name, createdAt, updatedAt, messageCount);
+            }
         }
-    }
 }

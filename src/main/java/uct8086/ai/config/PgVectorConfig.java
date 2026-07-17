@@ -34,7 +34,6 @@ public class PgVectorConfig {
 
         return PgVectorStore.builder(new JdbcTemplate(ds), embeddingModel)
                 .initializeSchema(true)
-                .removeExistingVectorStoreTable(true)
                 .dimensions(1024)
                 .build();
     }

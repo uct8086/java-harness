@@ -1,78 +1,76 @@
 package uct8086.ai.mcp;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Component;
 
 /**
- * Service for MCP (Model Context Protocol) client integration.
- * Maps to OpenHarness's MCP client.
+ * MCP (Model Context Protocol) client service.
  *
- * <p>MCP allows the agent to connect to external tool servers.
- * This is a thin wrapper around Spring AI's MCP support.
+ * <p>Spring AI 2.0 auto-creates {@link ToolCallback} beans for each configured
+ * MCP server. This service queries those beans to list servers, tools, and
+ * invoke them programmatically.
  *
- * <p>Features:
- * <ul>
- *   <li>Connect to MCP servers (stdio or HTTP transport)</li>
- *   <li>List available MCP tools</li>
- *   <li>Call MCP tools</li>
- *   <li>Read MCP resources</li>
- * </ul>
+ * <p>Configuration in {@code application.yml}:
+ * <pre>{@code
+ * spring.ai.mcp.client.stdio.connections:
+ *   filesystem:
+ *     command: npx
+ *     args: ["-y", "@modelcontextprotocol/server-filesystem", "/allowed/dir"]
+ * spring.ai.mcp.client.sse.connections:
+ *   remote-api:
+ *     url: http://remote-server:8080/sse
+ * }</pre>
  */
 @Component
 public class McpClientService {
 
     private static final Logger log = LoggerFactory.getLogger(McpClientService.class);
 
-    /**
-     * List connected MCP servers.
-     *
-     * @return list of server names
-     */
-    public List<String> listServers() {
-        // In a full implementation, this would query Spring AI's MCP client manager
-        log.debug("Listing MCP servers");
-        return List.of();
+    private final ApplicationContext applicationContext;
+
+    public McpClientService(ApplicationContext applicationContext) {
+        this.applicationContext = applicationContext;
     }
 
     /**
-     * List available tools from an MCP server.
-     *
-     * @param serverName the MCP server name
-     * @return list of tool descriptions
+     * List all available MCP tools (ToolCallback beans created by Spring AI).
      */
-    public List<Map<String, Object>> listTools(String serverName) {
-        // In a full implementation, this would call the MCP server's listTools method
-        log.debug("Listing tools from MCP server: {}", serverName);
-        return List.of();
+    public List<Map<String, String>> listTools() {
+        Map<String, ToolCallback> beans = applicationContext.getBeansOfType(ToolCallback.class);
+        return beans.values().stream()
+                .map(cb -> {
+                    Map<String, String> info = new HashMap<>();
+                    info.put("name", cb.getToolDefinition().name());
+                    info.put("description", cb.getToolDefinition().description());
+                    return info;
+                })
+                .toList();
     }
 
     /**
-     * Call a tool on an MCP server.
-     *
-     * @param serverName the MCP server name
-     * @param toolName   the tool name
-     * @param arguments  the tool arguments
-     * @return the tool result
+     * Call an MCP tool by name.
      */
-    public String callTool(String serverName, String toolName, Map<String, Object> arguments) {
-        // In a full implementation, this would call the MCP server's callTool method
-        log.debug("Calling MCP tool: {}/{}", serverName, toolName);
-        return "MCP tool call not implemented. Server: " + serverName + ", Tool: " + toolName;
-    }
-
-    /**
-     * Read a resource from an MCP server.
-     *
-     * @param serverName the MCP server name
-     * @param resourceUri the resource URI
-     * @return the resource content
-     */
-    public String readResource(String serverName, String resourceUri) {
-        // In a full implementation, this would call the MCP server's readResource method
-        log.debug("Reading MCP resource: {}/{}", serverName, resourceUri);
-        return "MCP resource read not implemented. Server: " + serverName + ", URI: " + resourceUri;
+    public String callTool(String toolName, Map<String, Object> arguments) {
+        Map<String, ToolCallback> beans = applicationContext.getBeansOfType(ToolCallback.class);
+        for (ToolCallback cb : beans.values()) {
+            if (cb.getToolDefinition().name().equals(toolName)) {
+                try {
+                    String input = arguments != null && !arguments.isEmpty()
+                            ? new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(arguments)
+                            : "{}";
+                    return cb.call(input);
+                } catch (Exception e) {
+                    log.error("MCP tool call failed: {}", toolName, e);
+                    return "Error: " + e.getMessage();
+                }
+            }
+        }
+        return "MCP tool not found: " + toolName;
     }
 }

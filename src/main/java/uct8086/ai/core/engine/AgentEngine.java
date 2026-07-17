@@ -12,7 +12,9 @@ import uct8086.ai.core.session.SessionManager;
 import uct8086.ai.core.tool.ToolExecutionService;
 import uct8086.ai.core.tool.ToolRegistry;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +26,7 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -39,6 +42,7 @@ public class AgentEngine {
     private final CostTracker costTracker;
     private final PermissionChecker permissionChecker;
     private final HarnessProperties properties;
+    private final ApplicationContext applicationContext;
 
     @Autowired(required = false)
     @Qualifier("pgVectorStore")
@@ -51,7 +55,8 @@ public class AgentEngine {
                        SessionManager sessionManager,
                        CostTracker costTracker,
                        PermissionChecker permissionChecker,
-                       HarnessProperties properties) {
+                       HarnessProperties properties,
+                       ApplicationContext applicationContext) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
         this.toolExecutionService = toolExecutionService;
@@ -60,6 +65,7 @@ public class AgentEngine {
         this.costTracker = costTracker;
         this.permissionChecker = permissionChecker;
         this.properties = properties;
+        this.applicationContext = applicationContext;
     }
 
     private String enrichWithRag(String systemPrompt, String userPrompt) {
@@ -87,16 +93,16 @@ public class AgentEngine {
         permissionChecker.setMode(properties.getPermissionMode());
         Path workingDir = Path.of(properties.getWorkingDirectory());
         ToolExecutionContext context = new ToolExecutionContext(
-                session.getId(), workingDir, properties.getPermissionMode());
+                session.id(), workingDir, properties.getPermissionMode());
 
         String systemPrompt = properties.getSystemPrompt() != null
                 ? properties.getSystemPrompt()
                 : promptAssembler.buildSystemPrompt();
         systemPrompt = enrichWithRag(systemPrompt, userPrompt);
-        sessionManager.addMessage(session.getId(), AgentMessage.user(userPrompt));
+        sessionManager.addMessage(session.id(), AgentMessage.user(userPrompt));
 
         ToolCallback[] callbacks = buildToolCallbacks();
-        log.info("Starting agent loop for session {} (tools: {})", session.getId(), callbacks.length);
+        log.info("Starting agent loop for session {} (tools: {})", session.id(), callbacks.length);
 
         long startTime = System.currentTimeMillis();
         try {
@@ -117,12 +123,12 @@ public class AgentEngine {
             log.info("Model responded in {}ms, in={} out={}", elapsed,
                     usage.inputTokens(), usage.outputTokens());
 
-            sessionManager.addMessage(session.getId(), AgentMessage.assistant(response));
-            costTracker.record(session.getId(), usage);
+            sessionManager.addMessage(session.id(), AgentMessage.assistant(response));
+            costTracker.record(session.id(), usage);
             return AgentLoopResult.success(response, 1, List.of(), usage);
 
         } catch (Exception e) {
-            log.error("Agent loop failed for session {}", session.getId(), e);
+            log.error("Agent loop failed for session {}", session.id(), e);
             return AgentLoopResult.failure(e.getMessage(), 0, List.of(), new TokenUsage());
         } finally {
             HarnessToolCallbackAdapter.clearContext();
@@ -137,14 +143,14 @@ public class AgentEngine {
         permissionChecker.setMode(properties.getPermissionMode());
         Path workingDir = Path.of(properties.getWorkingDirectory());
         ToolExecutionContext context = new ToolExecutionContext(
-                session.getId(), workingDir, properties.getPermissionMode());
+                session.id(), workingDir, properties.getPermissionMode());
 
         String systemPrompt = promptAssembler.buildSystemPrompt(additionalContext);
         systemPrompt = enrichWithRag(systemPrompt, userPrompt);
-        sessionManager.addMessage(session.getId(), AgentMessage.user(userPrompt));
+        sessionManager.addMessage(session.id(), AgentMessage.user(userPrompt));
 
         ToolCallback[] callbacks = buildToolCallbacks();
-        log.info("Starting agent loop for session {} (tools: {}, with context)", session.getId(), callbacks.length);
+        log.info("Starting agent loop for session {} (tools: {}, with context)", session.id(), callbacks.length);
 
         long startTime = System.currentTimeMillis();
         try {
@@ -165,12 +171,12 @@ public class AgentEngine {
             log.info("Model responded in {}ms, in={} out={}", elapsed,
                     usage.inputTokens(), usage.outputTokens());
 
-            sessionManager.addMessage(session.getId(), AgentMessage.assistant(response));
-            costTracker.record(session.getId(), usage);
+            sessionManager.addMessage(session.id(), AgentMessage.assistant(response));
+            costTracker.record(session.id(), usage);
             return AgentLoopResult.success(response, 1, List.of(), usage);
 
         } catch (Exception e) {
-            log.error("Agent loop failed for session {}", session.getId(), e);
+            log.error("Agent loop failed for session {}", session.id(), e);
             return AgentLoopResult.failure(e.getMessage(), 0, List.of(), new TokenUsage());
         } finally {
             HarnessToolCallbackAdapter.clearContext();
@@ -178,9 +184,19 @@ public class AgentEngine {
     }
 
     private ToolCallback[] buildToolCallbacks() {
-        return toolRegistry.getAll().stream()
+        List<ToolCallback> callbacks = new ArrayList<>();
+
+        // 1. Custom HarnessTools (via ToolRegistry)
+        toolRegistry.getAll().stream()
                 .map(tool -> (ToolCallback) new HarnessToolCallbackAdapter(tool, toolExecutionService))
-                .toArray(ToolCallback[]::new);
+                .forEach(callbacks::add);
+
+        // 2. MCP tools — Spring AI auto-creates ToolCallback beans for each MCP server
+        Map<String, ToolCallback> mcpTools = applicationContext.getBeansOfType(ToolCallback.class);
+        log.info("Agent tools: {} custom + {} MCP", callbacks.size(), mcpTools.size());
+        callbacks.addAll(mcpTools.values());
+
+        return callbacks.toArray(ToolCallback[]::new);
     }
 
     /** Extract {@link TokenUsage} from Spring AI's {@link ChatResponse} metadata. */
