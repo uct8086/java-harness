@@ -43,34 +43,34 @@ UCT8086-AI（Open Agent Harness）是一个用 Java 技术栈实现的 AI Agent 
 ```
 uct8086-ai/
 ├── pom.xml                          # 父 POM（模块管理 + 依赖版本）
-├── uct8086-ai-common/                   # 公共模块：枚举、模型、异常
-├── uct8086-ai-core/                     # 核心模块：Agent 引擎、工具、权限、Hook、会话、成本
-├── uct8086-ai-skills/                   # 技能模块：Markdown 技能加载与注册
-├── uct8086-ai-memory/                    # 记忆模块：持久化记忆存储
-├── uct8086-ai-tasks/                    # 任务模块：后台任务管理
-├── uct8086-ai-coordinator/              # 协调模块：多 Agent 协作
-├── uct8086-ai-mcp/                      # MCP 模块：Model Context Protocol 客户端
-└── uct8086-ai-app/                      # 应用模块：Spring Boot 启动 + REST API
+├── common/                   # 公共模块：枚举、模型、异常
+├── core/                     # 核心模块：Agent 引擎、工具、权限、Hook、会话、成本
+├── skills/                   # 技能模块：Markdown 技能加载与注册
+├── memory/                    # 记忆模块：持久化记忆存储
+├── tasks/                    # 任务模块：后台任务管理
+├── coordinator/              # 协调模块：多 Agent 协作
+├── mcp/                      # MCP 模块：Model Context Protocol 客户端
+└── app/                      # 应用模块：Spring Boot 启动 + REST API
 ```
 
 ### 模块依赖关系
 
 ```
-uct8086-ai-app
-├── uct8086-ai-common
-├── uct8086-ai-core
-│   └── uct8086-ai-common
-├── uct8086-ai-skills
-│   └── uct8086-ai-common
-├── uct8086-ai-memory
-│   └── uct8086-ai-common
-├── uct8086-ai-tasks
-│   └── uct8086-ai-common
-├── uct8086-ai-coordinator
-│   ├── uct8086-ai-common
-│   └── uct8086-ai-tasks
-└── uct8086-ai-mcp
-    └── uct8086-ai-common
+app
+├── common
+├── core
+│   └── common
+├── skills
+│   └── common
+├── memory
+│   └── common
+├── tasks
+│   └── common
+├── coordinator
+│   ├── common
+│   └── tasks
+└── mcp
+    └── common
 ```
 
 ## 架构设计
@@ -521,7 +521,7 @@ description: Git 操作指南和最佳实践
 
 ## 项目结构详情
 
-### uct8086-ai-common
+### common
 
 公共枚举、模型和异常定义：
 
@@ -529,7 +529,7 @@ description: Git 操作指南和最佳实践
 - **模型**: `AgentMessage`、`HookContext`、`HookDefinition`、`HookResult`、`PathRule`、`PermissionResult`、`SessionInfo`、`TokenUsage`、`ToolDescriptor`、`ToolExecutionContext`、`ToolResult`（包：`uct8086.ai.common.model`）
 - **异常**: `Uct8086Exception`、`PermissionDeniedException`、`SkillLoadException`、`ToolExecutionException`
 
-### uct8086-ai-core
+### core
 
 核心引擎和子系统：
 
@@ -544,7 +544,7 @@ description: Git 操作指南和最佳实践
 - **command** — `CommandRegistry`、`HarnessCommand` 接口（Slash 命令系统）
 - **config** — `HarnessProperties`（`uct8086.ai.*` 配置）、`HarnessCoreAutoConfiguration`（自动注册工具）
 
-### uct8086-ai-skills
+### skills
 
 技能加载与注册系统：
 
@@ -552,7 +552,7 @@ description: Git 操作指南和最佳实践
 - `SkillLoader` — 从文件系统加载 Markdown 技能，解析 YAML frontmatter
 - `SkillRegistry` — 技能注册表，支持项目 `.uct8086/skills/` 目录加载
 
-### uct8086-ai-memory
+### memory
 
 持久化记忆存储：
 
@@ -560,14 +560,14 @@ description: Git 操作指南和最佳实践
 - `MemoryStore` — 记忆存储接口
 - `FileMemoryStore` — 基于 MEMORY.md 文件实现，内存索引 + 文件持久化
 
-### uct8086-ai-tasks
+### tasks
 
 后台任务管理：
 
 - `BackgroundTask` — 后台任务 record（状态机：PENDING → RUNNING → COMPLETED/FAILED/CANCELLED）（包：`uct8086.ai.tasks`）
 - `TaskManager` — 任务创建、异步执行、状态追踪、取消
 
-### uct8086-ai-coordinator
+### coordinator
 
 多 Agent 协作：
 
@@ -575,13 +575,13 @@ description: Git 操作指南和最佳实践
 - `AgentCoordinator` — 子 Agent 生成、任务委派
 - `TeamRegistry` — Agent 团队注册表
 
-### uct8086-ai-mcp
+### mcp
 
 MCP（Model Context Protocol）客户端集成：
 
 - `McpClientService` — 连接 MCP 服务器、列出工具、调用工具、读取资源
 
-### uct8086-ai-app
+### app
 
 Spring Boot 应用入口：
 
