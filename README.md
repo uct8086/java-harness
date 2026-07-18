@@ -53,25 +53,6 @@ uct8086-ai/
 └── app/                      # 应用模块：Spring Boot 启动 + REST API
 ```
 
-### 模块依赖关系
-
-```
-app
-├── common
-├── core
-│   └── common
-├── skills
-│   └── common
-├── memory
-│   └── common
-├── tasks
-│   └── common
-├── coordinator
-│   ├── common
-│   └── tasks
-└── mcp
-    └── common
-```
 
 ## 架构设计
 
