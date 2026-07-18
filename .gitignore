@@ -33,3 +33,4 @@ logs/
 
 # UCT8086 data
 .uct8086/
+.codebuddy/
