@@ -9,11 +9,15 @@ const http = axios.create({
 })
 
 // ---------- Agent Engine ----------
-export const chat = (prompt, sessionId) =>
-  http.post('/chat', { prompt, sessionId }).then(r => r.data)
+export const chat = (prompt, sessionId, model) =>
+  http.post('/chat', { prompt, sessionId, model }).then(r => r.data)
 
-export const chatWithContext = (prompt, sessionId, additionalContext) =>
-  http.post('/chat-with-context', { prompt, sessionId, additionalContext }).then(r => r.data)
+export const chatWithContext = (prompt, sessionId, additionalContext, model) =>
+  http.post('/chat-with-context', { prompt, sessionId, additionalContext, model }).then(r => r.data)
+
+// ---------- Models ----------
+export const listModels = () =>
+  http.get('/models').then(r => r.data)
 
 // ---------- Sessions ----------
 export const listSessions = () =>

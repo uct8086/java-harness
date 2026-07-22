@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted, watch, nextTick } from 'vue'
-import { chat, chatWithContext, listSessions, createSession, getSessionMessages } from '@/api/client'
+import { chat, chatWithContext, listModels, listSessions, createSession, getSessionMessages } from '@/api/client'
 import { formatNumber, formatCost } from '@/utils/format'
 import Markdown from '@/components/Markdown.vue'
 
@@ -14,6 +14,8 @@ const errorMsg = ref('')
 const messages = ref([])      // AgentMessage[] { role, content, toolCalls, toolCallId }
 const lastResult = ref(null)  // last AgentLoopResult (tool calls + token usage)
 const streamEl = ref(null)
+const models = ref([])        // available models [{ id, provider }]
+const selectedModel = ref('')
 
 async function loadSessions() {
   try { sessions.value = await listSessions() } catch (e) { /* optional */ }
@@ -49,14 +51,15 @@ async function send() {
   lastResult.value = null
   const text = prompt.value
   prompt.value = ''
+  const model = selectedModel.value || undefined
   // optimistic user bubble
   messages.value.push({ role: 'USER', content: text, toolCalls: [] })
   await nextTick(); scrollBottom()
   try {
     const ctx = showContext.value ? additionalContext.value.trim() : ''
     const data = ctx
-      ? await chatWithContext(text, sessionId.value, ctx)
-      : await chat(text, sessionId.value)
+      ? await chatWithContext(text, sessionId.value, ctx, model)
+      : await chat(text, sessionId.value, model)
     lastResult.value = data
     if (data.success) {
       // Append the assistant reply directly from the result so it always renders,
@@ -88,7 +91,11 @@ function onKey(e) {
   }
 }
 
-onMounted(loadSessions)
+async function loadModels() {
+  try { models.value = await listModels() } catch (e) { /* models unavailable */ }
+}
+
+onMounted(() => { loadSessions(); loadModels() })
 </script>
 
 <template>
@@ -169,6 +176,12 @@ onMounted(loadSessions)
     </details>
 
     <section class="card composer">
+      <div v-if="models.length" style="margin-bottom:8px;">
+        <select v-model="selectedModel">
+          <option value="">默认模型</option>
+          <option v-for="m in models" :key="m.id" :value="m.id">{{ m.id }}</option>
+        </select>
+      </div>
       <textarea
         v-model="prompt"
         @keydown="onKey"

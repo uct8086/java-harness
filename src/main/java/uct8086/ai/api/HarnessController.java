@@ -1,6 +1,7 @@
 package uct8086.ai.api;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import uct8086.ai.common.enums.PermissionMode;
 import uct8086.ai.common.model.AgentMessage;
 import uct8086.ai.common.model.ToolDescriptor;
@@ -24,7 +25,10 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpHeaders;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.client.RestClient;
 
 /**
  * REST API controller for the UCT8086-AI harness.
@@ -49,6 +53,14 @@ public class HarnessController {
     @Autowired(required = false)
     @Qualifier("pgVectorStore")
     private VectorStore vectorStore;
+
+    @Value("${qoder2api.url:http://localhost:3000}")
+    private String qoder2apiUrl;
+
+    @Value("${QODER_API_KEY:harness-key-2026}")
+    private String qoderPat;
+
+    private final RestClient restClient = RestClient.create();
 
     public HarnessController(AgentEngine agentEngine,
                              ToolRegistry toolRegistry,
@@ -75,12 +87,13 @@ public class HarnessController {
      */
     @PostMapping("/chat")
     public AgentLoopResult chat(@RequestBody ChatRequest request) {
-        log.info("Chat request received - prompt: '{}', sessionId: {}",
+        log.info("Chat request received - prompt: '{}', sessionId: {}, model: {}",
                 request.prompt() != null && request.prompt().length() > 100
                         ? request.prompt().substring(0, 100) + "..."
                         : request.prompt(),
-                request.sessionId());
-        return agentEngine.execute(request.prompt(), request.sessionId());
+                request.sessionId(),
+                request.model());
+        return agentEngine.execute(request.prompt(), request.sessionId(), request.model());
     }
 
     /**
@@ -88,7 +101,39 @@ public class HarnessController {
      */
     @PostMapping("/chat-with-context")
     public AgentLoopResult chatWithContext(@RequestBody ChatWithContextRequest request) {
-        return agentEngine.execute(request.prompt(), request.sessionId(), request.additionalContext());
+        return agentEngine.execute(request.prompt(), request.sessionId(),
+                request.additionalContext(), request.model());
+    }
+
+    // ========== Models ==========
+
+    /**
+     * List available models from Qoder (via qoder2api bridge).
+     * Returns a simplified list of model IDs for the frontend selector.
+     */
+    @GetMapping("/models")
+    public List<ModelInfo> listModels() {
+        try {
+            var modelsResp = restClient.get()
+                    .uri(qoder2apiUrl + "/v1/models")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + qoderPat)
+                    .retrieve()
+                    .body(new ParameterizedTypeReference<Map<String, Object>>() {});
+            if (modelsResp == null) return List.of();
+
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> data = (List<Map<String, Object>>) modelsResp.get("data");
+            if (data == null) return List.of();
+
+            return data.stream()
+                    .map(m -> new ModelInfo(
+                            (String) m.get("id"),
+                            (String) m.getOrDefault("owned_by", "")))
+                    .toList();
+        } catch (Exception e) {
+            log.warn("Failed to fetch models from qoder2api", e);
+            return List.of();
+        }
     }
 
     // ========== Sessions ==========
@@ -237,11 +282,13 @@ public class HarnessController {
 
     // ========== Request DTOs ==========
 
-    public record ChatRequest(String prompt, String sessionId) {}
+    public record ChatRequest(String prompt, String sessionId, String model) {}
 
-    public record ChatWithContextRequest(String prompt, String sessionId, String additionalContext) {}
+    public record ChatWithContextRequest(String prompt, String sessionId, String additionalContext, String model) {}
 
     public record AddMemoryRequest(String category, String content) {}
 
     public record AddSkillRequest(String name, String description, String content) {}
+
+    public record ModelInfo(String id, String provider) {}
 }
