@@ -173,6 +173,42 @@ DeepSeek Chat API（生成回答）
 
 ### 安装依赖服务
 
+#### 方式一：Docker Compose（推荐，一键启动）
+
+项目根目录提供了 `docker-compose.yml`，一行命令启动 MySQL + Redis + Pgvector：
+
+```powershell
+# 启动 Docker Desktop 后执行
+cd C:\OutSpaces\java-harness
+docker compose up -d
+
+# 查看运行状态
+docker compose ps
+
+# 查看日志
+docker compose logs -f
+```
+
+启动后各服务端口与配置：
+
+| 服务 | 端口 | 用户名 | 密码 | 数据库 |
+|------|------|--------|------|--------|
+| MySQL 8.4 | 3306 | `root` | `root.2026` | `uct8086_ai` |
+| Redis 7 | 6379 | — | 无 | — |
+| Pgvector (PG17) | 5432 | `postgres` | `321432` | `postgres` |
+
+> 如果你本地已有某个服务在运行，编辑 `docker-compose.yml` 注释掉对应的 service 块即可避免端口冲突。
+
+常用命令：
+```powershell
+docker compose up -d      # 启动全部
+docker compose down       # 停止全部
+docker compose logs -f    # 查看日志
+docker compose ps         # 查看容器状态
+```
+
+#### 方式二：手动安装
+
 **1. MySQL** — 手动建库：
 ```sql
 CREATE DATABASE uct8086_ai CHARACTER SET utf8mb4;

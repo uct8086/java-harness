@@ -1,0 +1,68 @@
+# =========================================
+# UCT8086-AI 本地开发环境 — Docker 服务编排
+# 启动: docker compose up -d
+# 停止: docker compose down
+# 查看日志: docker compose logs -f
+# =========================================
+
+services:
+
+  # ---- PostgreSQL + pgvector (向量存储) ----
+  pgvector:
+    image: pgvector/pgvector:pg17
+    container_name: uct8086-pgvector
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "321432"
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---- Redis (会话/缓存) ----
+  redis:
+    image: redis:7-alpine
+    container_name: uct8086-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---- MySQL (可选；如果本地没有 MySQL 就启用) ----
+  mysql:
+    image: mysql:8.4
+    container_name: uct8086-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: "root.2026"
+      MYSQL_DATABASE: uct8086_ai
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 8s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  pgvector_data:
+  redis_data:
+  mysql_data:
