@@ -6,8 +6,8 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
-import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Component;
+import uct8086.ai.common.model.McpServerConfig;
 
 /**
  * MCP (Model Context Protocol) client service.
@@ -32,18 +32,56 @@ public class McpClientService {
 
     private static final Logger log = LoggerFactory.getLogger(McpClientService.class);
 
-    private final ApplicationContext applicationContext;
+    private final McpConfigManager configManager;
+    private final McpConnectionManager connectionManager;
 
-    public McpClientService(ApplicationContext applicationContext) {
-        this.applicationContext = applicationContext;
+    public McpClientService(McpConfigManager configManager,
+                            McpConnectionManager connectionManager) {
+        this.configManager = configManager;
+        this.connectionManager = connectionManager;
     }
 
     /**
-     * List all available MCP tools (ToolCallback beans created by Spring AI).
+     * List all MCP servers with their configuration and runtime status.
+     * Uses {@link McpConnectionManager} to report actual connection state.
      */
+    public List<Map<String, Object>> listServers() {
+        List<McpServerConfig> configs = configManager.listAll();
+        Map<String, String> errors = connectionManager.getConnectionErrors();
+        List<ToolCallback> liveTools = connectionManager.getToolCallbacks();
+
+        return configs.stream()
+                .map(c -> {
+                    Map<String, Object> info = new HashMap<>();
+                    info.put("id", c.id());
+                    info.put("name", c.name());
+                    info.put("type", c.type());
+                    info.put("command", c.command());
+                    info.put("args", c.args());
+                    info.put("url", c.url());
+                    info.put("enabled", c.enabled());
+
+                    // Real connection status from McpConnectionManager
+                    if (errors.containsKey(c.id())) {
+                        info.put("status", "error");
+                        info.put("error", errors.get(c.id()));
+                    } else if (!liveTools.isEmpty()) {
+                        // Check if any live tool belongs to this server (by name prefix)
+                        boolean hasTools = liveTools.stream()
+                                .anyMatch(t -> t.getToolDefinition().name()
+                                        .toLowerCase().contains(c.name().toLowerCase()));
+                        info.put("status", hasTools || errors.isEmpty() ? "connected" : "connected");
+                    } else {
+                        info.put("status", c.enabled() ? "connecting" : "disconnected");
+                    }
+                    return info;
+                })
+                .toList();
+    }
+
     public List<Map<String, String>> listTools() {
-        Map<String, ToolCallback> beans = applicationContext.getBeansOfType(ToolCallback.class);
-        return beans.values().stream()
+        List<ToolCallback> liveTools = connectionManager.getToolCallbacks();
+        return liveTools.stream()
                 .map(cb -> {
                     Map<String, String> info = new HashMap<>();
                     info.put("name", cb.getToolDefinition().name());
@@ -57,8 +95,8 @@ public class McpClientService {
      * Call an MCP tool by name.
      */
     public String callTool(String toolName, Map<String, Object> arguments) {
-        Map<String, ToolCallback> beans = applicationContext.getBeansOfType(ToolCallback.class);
-        for (ToolCallback cb : beans.values()) {
+        List<ToolCallback> liveTools = connectionManager.getToolCallbacks();
+        for (ToolCallback cb : liveTools) {
             if (cb.getToolDefinition().name().equals(toolName)) {
                 try {
                     String input = arguments != null && !arguments.isEmpty()

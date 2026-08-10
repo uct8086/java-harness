@@ -28,6 +28,7 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Component;
+import uct8086.ai.mcp.McpConnectionManager;
 
 @Component
 public class AgentEngine {
@@ -43,6 +44,7 @@ public class AgentEngine {
     private final PermissionChecker permissionChecker;
     private final HarnessProperties properties;
     private final ApplicationContext applicationContext;
+    private final McpConnectionManager mcpConnectionManager;
 
     @Autowired(required = false)
     @Qualifier("pgVectorStore")
@@ -56,7 +58,8 @@ public class AgentEngine {
                        CostTracker costTracker,
                        PermissionChecker permissionChecker,
                        HarnessProperties properties,
-                       ApplicationContext applicationContext) {
+                       ApplicationContext applicationContext,
+                       McpConnectionManager mcpConnectionManager) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
         this.toolExecutionService = toolExecutionService;
@@ -66,6 +69,7 @@ public class AgentEngine {
         this.permissionChecker = permissionChecker;
         this.properties = properties;
         this.applicationContext = applicationContext;
+        this.mcpConnectionManager = mcpConnectionManager;
     }
 
     private String enrichWithRag(String systemPrompt, String userPrompt) {
@@ -191,10 +195,10 @@ public class AgentEngine {
                 .map(tool -> (ToolCallback) new HarnessToolCallbackAdapter(tool, toolExecutionService))
                 .forEach(callbacks::add);
 
-        // 2. MCP tools — Spring AI auto-creates ToolCallback beans for each MCP server
-        Map<String, ToolCallback> mcpTools = applicationContext.getBeansOfType(ToolCallback.class);
-        log.info("Agent tools: {} custom + {} MCP", callbacks.size(), mcpTools.size());
-        callbacks.addAll(mcpTools.values());
+        // 2. MCP tools — dynamically connected from .uct8086/mcp-servers.json
+        List<ToolCallback> mcpCallbacks = mcpConnectionManager.getToolCallbacks();
+        log.info("Agent tools: {} custom + {} MCP", callbacks.size(), mcpCallbacks.size());
+        callbacks.addAll(mcpCallbacks);
 
         return callbacks.toArray(ToolCallback[]::new);
     }

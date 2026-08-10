@@ -31,9 +31,9 @@ UCT8086-AI（Open Agent Harness）是一个用 Java 技术栈实现的 AI Agent 
 | Java | 21 |
 | Spring Boot | 4.0.0 |
 | Spring AI | 2.0.0 |
-| MySQL | 8.x（会话/消息持久化） |
+| MySQL | 8.0（会话/消息持久化） |
 | Redis | 7.x（会话缓存） |
-| PostgreSQL + pgvector | 16+（向量存储） |
+| PostgreSQL + pgvector | 17（向量存储） |
 | Ollama | `bge-m3` 模型（本地 Embedding） |
 | Lombok | (Spring Boot managed) |
 | 构建工具 | Maven |
@@ -166,31 +166,44 @@ DeepSeek Chat API（生成回答）
 
 - JDK 21+
 - Maven 3.8+
-- MySQL 8.x（会话/消息持久化）
+- MySQL 8.x（外部实例 `10.94.77.17:3506`，会话/消息持久化）
 - Redis 7.x（会话缓存）
 - PostgreSQL 16+ + pgvector 扩展（向量存储）
 - Ollama（本地 Embedding 模型）
 
 ### 安装依赖服务
 
-**1. MySQL** — 手动建库：
-```sql
-CREATE DATABASE uct8086_ai CHARACTER SET utf8mb4;
+项目根目录提供了 `docker-compose.yml`，一键启动 Redis、PostgreSQL+pgvector（MySQL 使用外部实例，不包含在内）：
+
+```powershell
+# 启动所有服务（后台运行）
+docker compose up -d
+
+# 查看服务状态
+docker compose ps
+
+# 查看日志
+docker compose logs -f
+
+# 停止服务
+docker compose down
+
+# 停止并清理数据卷（重置数据库）
+docker compose down -v
 ```
-表结构由 `schema.sql` 启动时自动创建。
 
-**2. Redis** — 默认 `localhost:6379`，无密码。
+各服务端口与凭证（与 `application.yml` 默认值一致）：
 
-**3. PostgreSQL + pgvector**：
-```sql
--- 安装扩展
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS hstore;
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-```
-`vector_store` 表由 `PgVectorStore` 启动时自动创建（1024 维）。
+| 服务 | 端口 | 用户名 | 密码 |
+|------|------|--------|------|
+| Redis 7 | 6379 | — | 无 |
+| PostgreSQL 17 + pgvector | 5432 | postgres | 321432 |
 
-**4. Ollama**（本地 Embedding）：
+> **说明：** MySQL 使用外部实例 `10.94.77.17:3506`（user: `root`，password: `root.2026`），不在 Docker Compose 中管理。数据库 `uct8086_ai` 需预先创建，表结构由 `schema.sql` 启动时自动创建。
+> PostgreSQL 的 `vector`、`hstore`、`uuid-ossp` 扩展由 `docker/postgres/init/01-extensions.sql` 自动安装。
+> `vector_store` 表由 `PgVectorStore` 启动时自动创建（1024 维）。
+
+**4. Ollama**（本地 Embedding，需单独安装）：
 ```bash
 # 下载安装：https://ollama.com/download/windows
 # 拉取中文 Embedding 模型（约 1.2GB）

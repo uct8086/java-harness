@@ -73,4 +73,26 @@ export const ingestKnowledge = (content, metadata = {}) =>
 export const searchKnowledge = (q, topK = 5) =>
   http.get('/knowledge/search', { params: { q, topK } }).then(r => r.data)
 
+// ---------- MCP (Model Context Protocol) ----------
+export const listMcpServers = () =>
+  http.get('/mcp/servers').then(r => r.data)
+
+export const listMcpTools = () =>
+  http.get('/mcp/tools').then(r => r.data)
+
+export const addMcpServer = (name, type, command, args, url) =>
+  http.post('/mcp/servers', { name, type, command, args, url }).then(r => r.data)
+
+export const updateMcpServer = (id, data) =>
+  http.put(`/mcp/servers/${id}`, data).then(r => r.data)
+
+export const toggleMcpServer = (id) =>
+  http.put(`/mcp/servers/${id}/toggle`).then(r => r.data)
+
+export const deleteMcpServer = (id) =>
+  http.delete(`/mcp/servers/${id}`).then(r => r.data)
+
+export const refreshMcp = () =>
+  http.post('/mcp/refresh').then(r => r.data)
+
 export default http

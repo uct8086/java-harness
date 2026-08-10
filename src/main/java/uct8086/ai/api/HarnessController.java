@@ -12,12 +12,17 @@ import uct8086.ai.core.session.SessionManager;
 import uct8086.ai.core.tool.ToolRegistry;
 import uct8086.ai.skills.Skill;
 import uct8086.ai.skills.SkillRegistry;
+import uct8086.ai.mcp.McpClientService;
+import uct8086.ai.mcp.McpConfigManager;
+import uct8086.ai.mcp.McpConnectionManager;
+import uct8086.ai.common.model.McpServerConfig;
 import uct8086.ai.memory.FileMemoryStore;
 import uct8086.ai.memory.MemoryEntry;
 import uct8086.ai.tasks.BackgroundTask;
 import uct8086.ai.tasks.TaskManager;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -44,6 +49,9 @@ public class HarnessController {
     private final SkillRegistry skillRegistry;
     private final FileMemoryStore memoryStore;
     private final TaskManager taskManager;
+    private final McpClientService mcpClientService;
+    private final McpConfigManager mcpConfigManager;
+    private final McpConnectionManager mcpConnectionManager;
 
     /** RAG vector store (optional — disabled when pgvector is unavailable). */
     @Autowired(required = false)
@@ -57,7 +65,10 @@ public class HarnessController {
                              PermissionChecker permissionChecker,
                              SkillRegistry skillRegistry,
                              FileMemoryStore memoryStore,
-                             TaskManager taskManager) {
+                             TaskManager taskManager,
+                             McpClientService mcpClientService,
+                             McpConfigManager mcpConfigManager,
+                             McpConnectionManager mcpConnectionManager) {
         this.agentEngine = agentEngine;
         this.toolRegistry = toolRegistry;
         this.sessionManager = sessionManager;
@@ -66,6 +77,9 @@ public class HarnessController {
         this.skillRegistry = skillRegistry;
         this.memoryStore = memoryStore;
         this.taskManager = taskManager;
+        this.mcpClientService = mcpClientService;
+        this.mcpConfigManager = mcpConfigManager;
+        this.mcpConnectionManager = mcpConnectionManager;
     }
 
     // ========== Agent Engine ==========
@@ -235,6 +249,93 @@ public class HarnessController {
 
     public record IngestRequest(String content, Map<String, Object> metadata) {}
 
+    // ========== MCP (Model Context Protocol) ==========
+
+    /**
+     * List all MCP servers with their config and runtime status.
+     */
+    @GetMapping("/mcp/servers")
+    public List<Map<String, Object>> listMcpServers() {
+        return mcpClientService.listServers();
+    }
+
+    /**
+     * List MCP tools currently active (from Spring AI ToolCallbacks).
+     */
+    @GetMapping("/mcp/tools")
+    public List<Map<String, String>> listMcpTools() {
+        return mcpClientService.listTools();
+    }
+
+    /**
+     * Add a new MCP server configuration.
+     */
+    @PostMapping("/mcp/servers")
+    public McpServerConfig addMcpServer(@RequestBody AddMcpServerRequest request) {
+        String id = UUID.randomUUID().toString().substring(0, 8);
+        McpServerConfig config = new McpServerConfig(
+                id,
+                request.name(),
+                request.type() != null ? request.type() : "stdio",
+                request.command(),
+                request.args() != null ? request.args() : List.of(),
+                request.url(),
+                true
+        );
+        return mcpConfigManager.save(config);
+    }
+
+    /**
+     * Update an MCP server configuration.
+     */
+    @PutMapping("/mcp/servers/{id}")
+    public McpServerConfig updateMcpServer(@PathVariable String id,
+                                            @RequestBody AddMcpServerRequest request) {
+        return mcpConfigManager.get(id)
+                .map(existing -> {
+                    McpServerConfig updated = new McpServerConfig(
+                            id,
+                            request.name() != null ? request.name() : existing.name(),
+                            request.type() != null ? request.type() : existing.type(),
+                            request.command() != null ? request.command() : existing.command(),
+                            request.args() != null ? request.args() : existing.args(),
+                            request.url() != null ? request.url() : existing.url(),
+                            existing.enabled()
+                    );
+                    return mcpConfigManager.save(updated);
+                })
+                .orElseThrow(() -> new IllegalArgumentException("MCP server not found: " + id));
+    }
+
+    /**
+     * Toggle a server enabled/disabled.
+     */
+    @PutMapping("/mcp/servers/{id}/toggle")
+    public McpServerConfig toggleMcpServer(@PathVariable String id) {
+        return mcpConfigManager.get(id)
+                .map(c -> mcpConfigManager.save(c.withEnabled(!c.enabled())))
+                .orElseThrow(() -> new IllegalArgumentException("MCP server not found: " + id));
+    }
+
+    /**
+     * Delete an MCP server configuration.
+     */
+    @DeleteMapping("/mcp/servers/{id}")
+    public Map<String, Boolean> deleteMcpServer(@PathVariable String id) {
+        return Map.of("deleted", mcpConfigManager.delete(id));
+    }
+
+    /**
+     * Reconnect to all enabled MCP servers.
+     * Call after adding/removing/updating configs to apply changes.
+     */
+    @PostMapping("/mcp/refresh")
+    public Map<String, Object> refreshMcpConnections() {
+        mcpConnectionManager.refresh();
+        return Map.of("active", mcpConnectionManager.getActiveCount(),
+                "errors", mcpConnectionManager.getConnectionErrors());
+    }
+
     // ========== Request DTOs ==========
 
     public record ChatRequest(String prompt, String sessionId) {}
@@ -244,4 +345,7 @@ public class HarnessController {
     public record AddMemoryRequest(String category, String content) {}
 
     public record AddSkillRequest(String name, String description, String content) {}
+
+    public record AddMcpServerRequest(String name, String type, String command,
+                                       List<String> args, String url) {}
 }

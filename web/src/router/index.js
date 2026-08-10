@@ -7,6 +7,7 @@ const routes = [
   { path: '/skills', name: 'skills', component: () => import('@/views/SkillsView.vue'), meta: { title: '技能', icon: '⚡' } },
   { path: '/memory', name: 'memory', component: () => import('@/views/MemoryView.vue'), meta: { title: '记忆', icon: '🧠' } },
   { path: '/knowledge', name: 'knowledge', component: () => import('@/views/KnowledgeView.vue'), meta: { title: '知识库', icon: '📚' } },
+  { path: '/mcp', name: 'mcp', component: () => import('@/views/McpView.vue'), meta: { title: 'MCP', icon: '🔌' } },
   { path: '/settings', name: 'settings', component: () => import('@/views/SettingsView.vue'), meta: { title: '设置', icon: '⚙️' } }
 ]
 

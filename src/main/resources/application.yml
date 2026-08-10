@@ -14,10 +14,10 @@ spring:
     exclude:
       - org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
 
-  # Datasource (MySQL)
+  # Datasource (MySQL — 外部实例)
   datasource:
-    url: jdbc:mysql://${MYSQL_HOST:localhost}:3306/${MYSQL_DATABASE:uct8086_ai}?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-    username: ${MYSQL_USER:root}
+    url: jdbc:mysql://10.94.77.17:3506/uct8086_ai?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
     password: ${MYSQL_PASSWORD:root.2026}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
