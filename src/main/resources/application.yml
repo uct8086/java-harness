@@ -106,6 +106,24 @@ uct8086:
     # Memory file location (default: <working-directory>/.uct8086/MEMORY.md)
     # memory-file: ${user.dir}/.uct8086/MEMORY.md
 
+    # ========== Cost / Budget Alerting ==========
+    # Enable cost alerting (WARN/ERROR logs when budget thresholds exceeded)
+    cost-alert-enabled: true
+
+    # Warning threshold for per-session cost (CNY yuan). Logs WARN.
+    session-cost-warn-threshold: 5.0
+
+    # Hard limit for per-session cost (CNY yuan). Logs ERROR. 0 = disabled.
+    session-cost-hard-limit: 0.0
+
+    # Warning threshold for total accumulated cost across all sessions (CNY yuan).
+    total-cost-warn-threshold: 100.0
+
+    # Custom pricing per 1M tokens (USD). Overrides TokenUsage defaults.
+    # Default: input=$0.435/M, output=$0.28/M (DeepSeek V4 Pro permanent pricing)
+    # input-price-per-m: 0.435
+    # output-price-per-m: 0.28
+
     # Model override (optional)
     # model: gpt-4o
     # temperature: 0.7

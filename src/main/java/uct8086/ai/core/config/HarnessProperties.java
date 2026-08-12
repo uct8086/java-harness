@@ -49,6 +49,26 @@ public class HarnessProperties {
     /** Path to the memory file (MEMORY.md). Defaults to <workingDirectory>/.uct8086/MEMORY.md */
     private String memoryFile;
 
+    // ========== Cost / Budget Alerting ==========
+
+    /** Whether to enable cost alerting (warn when budget threshold exceeded) */
+    private boolean costAlertEnabled = true;
+
+    /** Warning threshold for session cost in CNY (yuan). Logs WARN when exceeded. Default 5.0 */
+    private double sessionCostWarnThreshold = 5.0;
+
+    /** Hard limit for session cost in CNY (yuan). Logs ERROR + throws if exceeded. 0 = disabled */
+    private double sessionCostHardLimit = 0.0;
+
+    /** Warning threshold for total accumulated cost across all sessions in CNY. Default 100.0 */
+    private double totalCostWarnThreshold = 100.0;
+
+    /** Input price per 1M tokens (USD). Overrides TokenUsage default */
+    private Double inputPricePerM;
+
+    /** Output price per 1M tokens (USD). Overrides TokenUsage default */
+    private Double outputPricePerM;
+
     // Getters and Setters
 
     public PermissionMode getPermissionMode() { return permissionMode; }
@@ -89,4 +109,22 @@ public class HarnessProperties {
 
     public String getMemoryFile() { return memoryFile; }
     public void setMemoryFile(String memoryFile) { this.memoryFile = memoryFile; }
+
+    public boolean isCostAlertEnabled() { return costAlertEnabled; }
+    public void setCostAlertEnabled(boolean costAlertEnabled) { this.costAlertEnabled = costAlertEnabled; }
+
+    public double getSessionCostWarnThreshold() { return sessionCostWarnThreshold; }
+    public void setSessionCostWarnThreshold(double sessionCostWarnThreshold) { this.sessionCostWarnThreshold = sessionCostWarnThreshold; }
+
+    public double getSessionCostHardLimit() { return sessionCostHardLimit; }
+    public void setSessionCostHardLimit(double sessionCostHardLimit) { this.sessionCostHardLimit = sessionCostHardLimit; }
+
+    public double getTotalCostWarnThreshold() { return totalCostWarnThreshold; }
+    public void setTotalCostWarnThreshold(double totalCostWarnThreshold) { this.totalCostWarnThreshold = totalCostWarnThreshold; }
+
+    public Double getInputPricePerM() { return inputPricePerM; }
+    public void setInputPricePerM(Double inputPricePerM) { this.inputPricePerM = inputPricePerM; }
+
+    public Double getOutputPricePerM() { return outputPricePerM; }
+    public void setOutputPricePerM(Double outputPricePerM) { this.outputPricePerM = outputPricePerM; }
 }
