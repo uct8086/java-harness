@@ -16,7 +16,8 @@ spring:
 
   # Datasource (MySQL — 外部实例)
   datasource:
-    url: jdbc:mysql://10.94.77.17:3506/uct8086_ai?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+#    url: jdbc:mysql://10.94.77.17:3506/uct8086_ai?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://127.0.0.1:3306/uct8086_ai?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
     password: ${MYSQL_PASSWORD:root.2026}
     driver-class-name: com.mysql.cj.jdbc.Driver

@@ -1,6 +1,29 @@
 package uct8086.ai.core.engine;
 
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.ChatClientResponse;
+import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.document.Document;
+import org.springframework.ai.model.tool.ToolCallingManager;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.ApplicationContext;
+import org.springframework.stereotype.Component;
+
 import uct8086.ai.common.model.AgentMessage;
 import uct8086.ai.common.model.TokenUsage;
 import uct8086.ai.common.model.ToolExecutionContext;
@@ -11,23 +34,6 @@ import uct8086.ai.core.prompt.PromptAssembler;
 import uct8086.ai.core.session.SessionManager;
 import uct8086.ai.core.tool.ToolExecutionService;
 import uct8086.ai.core.tool.ToolRegistry;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.document.Document;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.context.ApplicationContext;
-import org.springframework.stereotype.Component;
 import uct8086.ai.mcp.McpConnectionManager;
 
 @Component
@@ -90,56 +96,23 @@ public class AgentEngine {
     }
 
     public AgentLoopResult execute(String userPrompt, String sessionId) {
-        SessionManager.ConversationSession session = (sessionId != null)
-                ? sessionManager.getSession(sessionId).orElseGet(() -> sessionManager.createSession())
-                : sessionManager.createSession();
-
-        permissionChecker.setMode(properties.getPermissionMode());
-        Path workingDir = Path.of(properties.getWorkingDirectory());
-        ToolExecutionContext context = new ToolExecutionContext(
-                session.id(), workingDir, properties.getPermissionMode());
-
-        String systemPrompt = properties.getSystemPrompt() != null
-                ? properties.getSystemPrompt()
-                : promptAssembler.buildSystemPrompt();
-        systemPrompt = enrichWithRag(systemPrompt, userPrompt);
-        sessionManager.addMessage(session.id(), AgentMessage.user(userPrompt));
-
-        ToolCallback[] callbacks = buildToolCallbacks();
-        log.info("Starting agent loop for session {} (tools: {})", session.id(), callbacks.length);
-
-        long startTime = System.currentTimeMillis();
-        try {
-            HarnessToolCallbackAdapter.setContext(context);
-            ChatClient chatClient = ChatClient.create(chatModel);
-
-            ChatResponse chatResponse = chatClient.prompt()
-                    .system(systemPrompt)
-                    .user(userPrompt)
-                    .tools(callbacks)
-                    .call()
-                    .chatResponse();
-
-            String response = chatResponse.getResult().getOutput().getText();
-            TokenUsage usage = extractUsage(chatResponse);
-
-            long elapsed = System.currentTimeMillis() - startTime;
-            log.info("Model responded in {}ms, in={} out={}", elapsed,
-                    usage.inputTokens(), usage.outputTokens());
-
-            sessionManager.addMessage(session.id(), AgentMessage.assistant(response));
-            costTracker.record(session.id(), usage);
-            return AgentLoopResult.success(response, 1, List.of(), usage);
-
-        } catch (Exception e) {
-            log.error("Agent loop failed for session {}", session.id(), e);
-            return AgentLoopResult.failure(e.getMessage(), 0, List.of(), new TokenUsage());
-        } finally {
-            HarnessToolCallbackAdapter.clearContext();
-        }
+        return executeInternal(userPrompt, sessionId, null);
     }
 
     public AgentLoopResult execute(String userPrompt, String sessionId, String additionalContext) {
+        return executeInternal(userPrompt, sessionId, additionalContext);
+    }
+
+    /**
+     * Core agent loop using Spring AI 2.0's official {@link ToolCallingAdvisor}
+     * with a custom {@link HarnessToolCallingAdvisor} wrapper to capture turn/tool-call metrics.
+     * <p>
+     * Tool callbacks are injected via {@link OpenAiChatOptions} on the Prompt, which is the
+     * standard Spring AI 2.0 mechanism. The {@link ToolCallingAdvisor} reads them from
+     * {@code ToolCallingChatOptions} at runtime.
+     */
+    @SuppressWarnings("unchecked")
+    private AgentLoopResult executeInternal(String userPrompt, String sessionId, String additionalContext) {
         SessionManager.ConversationSession session = (sessionId != null)
                 ? sessionManager.getSession(sessionId).orElseGet(() -> sessionManager.createSession())
                 : sessionManager.createSession();
@@ -149,35 +122,76 @@ public class AgentEngine {
         ToolExecutionContext context = new ToolExecutionContext(
                 session.id(), workingDir, properties.getPermissionMode());
 
-        String systemPrompt = promptAssembler.buildSystemPrompt(additionalContext);
+        String systemPrompt = (additionalContext != null)
+                ? promptAssembler.buildSystemPrompt(additionalContext)
+                : (properties.getSystemPrompt() != null
+                        ? properties.getSystemPrompt()
+                        : promptAssembler.buildSystemPrompt());
         systemPrompt = enrichWithRag(systemPrompt, userPrompt);
         sessionManager.addMessage(session.id(), AgentMessage.user(userPrompt));
 
         ToolCallback[] callbacks = buildToolCallbacks();
-        log.info("Starting agent loop for session {} (tools: {}, with context)", session.id(), callbacks.length);
+        int maxTurns = properties.getMaxTurns();
+        log.info("Starting agent loop for session {} (tools: {}, maxTurns: {})",
+                session.id(), callbacks.length, maxTurns);
 
         long startTime = System.currentTimeMillis();
+
         try {
             HarnessToolCallbackAdapter.setContext(context);
-            ChatClient chatClient = ChatClient.create(chatModel);
 
-            ChatResponse chatResponse = chatClient.prompt()
-                    .system(systemPrompt)
+            // Build the metrics-capturing advisor wrapping the official Spring AI ToolCallingAdvisor
+            HarnessToolCallingAdvisor harnessAdvisor = new HarnessToolCallingAdvisor(
+                    ToolCallingManager.builder().build(),
+                    ToolCallingAdvisor.DEFAULT_ORDER,
+                    true);
+
+            // Build default ChatOptions with tool definitions (OpenAiChatOptions extends ToolCallingChatOptions)
+            // NOTE: defaultOptions() accepts ChatOptions.Builder (raw type), NOT ChatOptions instance
+            OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
+                    .toolCallbacks(List.of(callbacks))
+                    .model(properties.getModel())
+                    .temperature(properties.getTemperature());
+
+            ChatClient chatClient = ChatClient.builder(chatModel)
+                    .defaultSystem(systemPrompt)
+                    .defaultOptions(optionsBuilder)
+                    .defaultAdvisors(harnessAdvisor)
+                    .build();
+
+            ChatClientResponse clientResponse = chatClient.prompt()
                     .user(userPrompt)
-                    .tools(callbacks)
                     .call()
-                    .chatResponse();
+                    .chatClientResponse();
 
-            String response = chatResponse.getResult().getOutput().getText();
+            // Extract final response text
+            ChatResponse chatResponse = clientResponse.chatResponse();
+            String response = chatResponse != null && chatResponse.getResult() != null
+                    && chatResponse.getResult().getOutput() != null
+                    && chatResponse.getResult().getOutput().getText() != null
+                    ? chatResponse.getResult().getOutput().getText()
+                    : "";
+
             TokenUsage usage = extractUsage(chatResponse);
 
+            // Extract metrics captured by HarnessToolCallingAdvisor
+            List<AgentLoopResult.ToolCallRecord> toolCallRecords =
+                    (List<AgentLoopResult.ToolCallRecord>) clientResponse.context()
+                            .getOrDefault(HarnessToolCallingAdvisor.CONTEXT_TOOL_CALL_RECORDS,
+                                    Collections.emptyList());
+
+            int[] turnCounter = (int[]) clientResponse.context()
+                    .get(HarnessToolCallingAdvisor.CONTEXT_TURNS);
+            int turns = (turnCounter != null) ? turnCounter[0] : 1;
+
             long elapsed = System.currentTimeMillis() - startTime;
-            log.info("Model responded in {}ms, in={} out={}", elapsed,
+            log.info("Agent loop finished: {} turns, {} tool calls, {}ms, in={} out={}",
+                    turns, toolCallRecords.size(), elapsed,
                     usage.inputTokens(), usage.outputTokens());
 
             sessionManager.addMessage(session.id(), AgentMessage.assistant(response));
             costTracker.record(session.id(), usage);
-            return AgentLoopResult.success(response, 1, List.of(), usage);
+            return AgentLoopResult.success(response, turns, toolCallRecords, usage);
 
         } catch (Exception e) {
             log.error("Agent loop failed for session {}", session.id(), e);
