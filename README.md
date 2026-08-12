@@ -1,6 +1,6 @@
 # UCT8086-AI: Open Agent Harness
 
-> 基于 Java 21 + Spring Boot 4.0 + Spring AI 2.0 构建的 AI Agent Harness 基础设施，参考 [OpenHarness](https://github.com/HKUDS/OpenHarness) 架构设计，提供完整的 Agent 工程化能力。
+> 基于 Java 21 + Spring Boot 4.0 + Spring AI 2.0 构建的 AI Agent Harness 基础设施，提供完整的 Agent 工程化能力。
 
 ## 项目简介
 
