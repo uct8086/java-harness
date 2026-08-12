@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.springframework.ai.mcp;
+package uct8086.ai.mcp;
 
 import io.modelcontextprotocol.spec.McpSchema;
 import org.jspecify.annotations.Nullable;

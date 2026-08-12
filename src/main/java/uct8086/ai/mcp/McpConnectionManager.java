@@ -1,11 +1,11 @@
 package uct8086.ai.mcp;
 
-import io.modelcontextprotocol.client.McpClient;
-import io.modelcontextprotocol.client.McpSyncClient;
-import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
+import uct8086.ai.client.McpClient;
+import uct8086.ai.client.McpSyncClient;
+import uct8086.ai.client.transport.HttpClientSseClientTransport;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.client.transport.ServerParameters;
-import io.modelcontextprotocol.client.transport.StdioClientTransport;
+import uct8086.ai.client.transport.StdioClientTransport;
 import jakarta.annotation.PostConstruct;
 import java.net.URI;
 import java.util.ArrayList;
@@ -16,7 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.mcp.SyncMcpToolCallbackProvider;
+import uct8086.ai.mcp.SyncMcpToolCallbackProvider;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.stereotype.Component;

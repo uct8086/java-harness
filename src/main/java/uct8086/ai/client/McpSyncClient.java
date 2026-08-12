@@ -2,12 +2,13 @@
  * Copyright 2024-2024 the original author or authors.
  */
 
-package io.modelcontextprotocol.client;
+package uct8086.ai.client;
 
 import java.time.Duration;
 import java.util.Map;
 import java.util.function.Supplier;
 
+import io.modelcontextprotocol.client.McpAsyncClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

@@ -14,15 +14,20 @@
  * limitations under the License.
  */
 
-package org.springframework.ai.mcp;
+package uct8086.ai.mcp;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
-import io.modelcontextprotocol.client.McpSyncClient;
+import uct8086.ai.client.McpSyncClient;
 
+import org.springframework.ai.mcp.DefaultMcpToolNamePrefixGenerator;
+import org.springframework.ai.mcp.McpToolFilter;
+import org.springframework.ai.mcp.McpToolNamePrefixGenerator;
+import org.springframework.ai.mcp.McpToolsChangedEvent;
+import org.springframework.ai.mcp.ToolContextToMcpMetaConverter;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.support.ToolUtils;
@@ -166,8 +171,8 @@ public class SyncMcpToolCallbackProvider implements ToolCallbackProvider, Applic
 		this.invalidateCache();
 	}
 
-	private static McpConnectionInfo connectionInfo(McpSyncClient mcpClient) {
-		return McpConnectionInfo.builder()
+	private static org.springframework.ai.mcp.McpConnectionInfo connectionInfo(McpSyncClient mcpClient) {
+		return org.springframework.ai.mcp.McpConnectionInfo.builder()
 			.clientCapabilities(mcpClient.getClientCapabilities())
 			.clientInfo(mcpClient.getClientInfo())
 			.initializeResult(mcpClient.getCurrentInitializationResult())

@@ -2,7 +2,7 @@
  * Copyright 2024-2026 the original author or authors.
  */
 
-package io.modelcontextprotocol.client;
+package uct8086.ai.client;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -11,8 +11,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 import java.util.function.Supplier;
 
+import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.common.McpTransportContext;
 import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.json.schema.JsonSchemaValidator;
@@ -550,17 +553,42 @@ public interface McpClient {
 		 * @return a new instance of {@link McpSyncClient}.
 		 */
 		public McpSyncClient build() {
-			McpClientFeatures.Sync syncFeatures = new McpClientFeatures.Sync(this.clientInfo, this.capabilities,
-					this.roots, this.toolsChangeConsumers, this.resourcesChangeConsumers, this.resourcesUpdateConsumers,
-					this.promptsChangeConsumers, this.loggingConsumers, this.progressConsumers,
-					this.elicitationCompleteConsumers, this.samplingHandler, this.formElicitationHandler,
-					this.urlElicitationHandler, this.enableCallToolSchemaCaching, this.applyElicitationDefaults);
+			try {
+				Class<?> syncClass = Class.forName("io.modelcontextprotocol.client.McpClientFeatures$Sync");
+				Constructor<?> syncCtor = syncClass.getDeclaredConstructor(
+						Implementation.class, ClientCapabilities.class, Map.class,
+						List.class, List.class, List.class, List.class, List.class,
+						List.class, List.class, Function.class, Function.class,
+						Function.class, boolean.class, boolean.class);
+				syncCtor.setAccessible(true);
+				Object syncFeatures = syncCtor.newInstance(
+						this.clientInfo, this.capabilities, this.roots,
+						this.toolsChangeConsumers, this.resourcesChangeConsumers,
+						this.resourcesUpdateConsumers, this.promptsChangeConsumers,
+						this.loggingConsumers, this.progressConsumers,
+						this.elicitationCompleteConsumers, this.samplingHandler,
+						this.formElicitationHandler, this.urlElicitationHandler,
+						this.enableCallToolSchemaCaching, this.applyElicitationDefaults);
 
-			McpClientFeatures.Async asyncFeatures = McpClientFeatures.Async.fromSync(syncFeatures);
+				Class<?> asyncClass = Class.forName("io.modelcontextprotocol.client.McpClientFeatures$Async");
+				Method fromSync = asyncClass.getDeclaredMethod("fromSync", syncClass);
+				fromSync.setAccessible(true);
+				Object asyncFeatures = fromSync.invoke(null, syncFeatures);
 
-			return new McpSyncClient(new McpAsyncClient(transport, this.requestTimeout, this.initializationTimeout,
-					jsonSchemaValidator != null ? jsonSchemaValidator : McpJsonDefaults.getSchemaValidator(),
-					asyncFeatures), this.contextProvider);
+				Constructor<McpAsyncClient> asyncCtor = McpAsyncClient.class.getDeclaredConstructor(
+						McpClientTransport.class, Duration.class, Duration.class,
+						JsonSchemaValidator.class, asyncClass);
+				asyncCtor.setAccessible(true);
+				McpAsyncClient asyncClient = asyncCtor.newInstance(
+						transport, this.requestTimeout, this.initializationTimeout,
+						jsonSchemaValidator != null ? jsonSchemaValidator : McpJsonDefaults.getSchemaValidator(),
+						asyncFeatures);
+
+				return new McpSyncClient(asyncClient, this.contextProvider);
+			}
+			catch (Exception e) {
+				throw new RuntimeException("Failed to build MCP client: " + e.getMessage(), e);
+			}
 		}
 
 	}
@@ -956,16 +984,37 @@ public interface McpClient {
 		 * @return a new instance of {@link McpAsyncClient}.
 		 */
 		public McpAsyncClient build() {
-			var jsonSchemaValidator = (this.jsonSchemaValidator != null) ? this.jsonSchemaValidator
-					: McpJsonDefaults.getSchemaValidator();
-			return new McpAsyncClient(this.transport, this.requestTimeout, this.initializationTimeout,
-					jsonSchemaValidator,
-					new McpClientFeatures.Async(this.clientInfo, this.capabilities, this.roots,
-							this.toolsChangeConsumers, this.resourcesChangeConsumers, this.resourcesUpdateConsumers,
-							this.promptsChangeConsumers, this.loggingConsumers, this.progressConsumers,
-							this.elicitationCompleteConsumers, this.samplingHandler, this.formElicitationHandler,
-							this.urlElicitationHandler, this.enableCallToolSchemaCaching,
-							this.applyElicitationDefaults));
+			try {
+				Class<?> asyncClass = Class.forName("io.modelcontextprotocol.client.McpClientFeatures$Async");
+				Constructor<?> asyncCtor = asyncClass.getDeclaredConstructor(
+						Implementation.class, ClientCapabilities.class, Map.class,
+						List.class, List.class, List.class, List.class, List.class,
+						List.class, List.class, Function.class, Function.class,
+						Function.class, boolean.class, boolean.class);
+				asyncCtor.setAccessible(true);
+				Object asyncFeatures = asyncCtor.newInstance(
+						this.clientInfo, this.capabilities, this.roots,
+						this.toolsChangeConsumers, this.resourcesChangeConsumers,
+						this.resourcesUpdateConsumers, this.promptsChangeConsumers,
+						this.loggingConsumers, this.progressConsumers,
+						this.elicitationCompleteConsumers, this.samplingHandler,
+						this.formElicitationHandler, this.urlElicitationHandler,
+						this.enableCallToolSchemaCaching, this.applyElicitationDefaults);
+
+				var jsonSchemaValidator = (this.jsonSchemaValidator != null) ? this.jsonSchemaValidator
+						: McpJsonDefaults.getSchemaValidator();
+
+				Constructor<McpAsyncClient> clientCtor = McpAsyncClient.class.getDeclaredConstructor(
+						McpClientTransport.class, Duration.class, Duration.class,
+						JsonSchemaValidator.class, asyncClass);
+				clientCtor.setAccessible(true);
+				return clientCtor.newInstance(
+						this.transport, this.requestTimeout, this.initializationTimeout,
+						jsonSchemaValidator, asyncFeatures);
+			}
+			catch (Exception e) {
+				throw new RuntimeException("Failed to build MCP async client: " + e.getMessage(), e);
+			}
 		}
 
 	}

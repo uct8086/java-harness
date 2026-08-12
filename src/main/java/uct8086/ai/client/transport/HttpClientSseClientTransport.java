@@ -2,7 +2,7 @@
  * Copyright 2024 - 2025 the original author or authors.
  */
 
-package io.modelcontextprotocol.client.transport;
+package uct8086.ai.client.transport;
 
 import java.io.IOException;
 import java.net.URI;
@@ -16,7 +16,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
-import io.modelcontextprotocol.client.transport.ResponseSubscribers.ResponseEvent;
+import io.modelcontextprotocol.client.transport.*;
+import java.lang.reflect.Method;
 import io.modelcontextprotocol.client.transport.customizer.McpAsyncHttpClientRequestCustomizer;
 import io.modelcontextprotocol.client.transport.customizer.McpSyncHttpClientRequestCustomizer;
 import io.modelcontextprotocol.common.McpTransportContext;
@@ -87,6 +88,40 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 
 	/** Default SSE endpoint path */
 	private static final String DEFAULT_SSE_ENDPOINT = "/sse";
+
+	/** Reflected access to package-private ResponseSubscribers members. */
+	private static final Method SSE_TO_BODY_SUBSCRIBER_METHOD;
+
+	private static final Method RESPONSE_EVENT_RESPONSE_INFO_METHOD;
+
+	private static final Method RESPONSE_EVENT_SSE_EVENT_METHOD;
+
+	private static final Method SSE_EVENT_EVENT_METHOD;
+
+	private static final Method SSE_EVENT_DATA_METHOD;
+
+	static {
+		try {
+			Class<?> responseSubscribersClass = Class
+				.forName("io.modelcontextprotocol.client.transport.ResponseSubscribers");
+			SSE_TO_BODY_SUBSCRIBER_METHOD = responseSubscribersClass.getDeclaredMethod("sseToBodySubscriber",
+					java.net.http.HttpResponse.ResponseInfo.class, reactor.core.publisher.FluxSink.class);
+			SSE_TO_BODY_SUBSCRIBER_METHOD.setAccessible(true);
+
+			Class<?> responseEventClass = Class
+				.forName("io.modelcontextprotocol.client.transport.ResponseSubscribers$ResponseEvent");
+			RESPONSE_EVENT_RESPONSE_INFO_METHOD = responseEventClass.getMethod("responseInfo");
+			RESPONSE_EVENT_SSE_EVENT_METHOD = responseEventClass.getMethod("sseEvent");
+
+			Class<?> sseEventClass = Class
+				.forName("io.modelcontextprotocol.client.transport.ResponseSubscribers$SseEvent");
+			SSE_EVENT_EVENT_METHOD = sseEventClass.getMethod("event");
+			SSE_EVENT_DATA_METHOD = sseEventClass.getMethod("data");
+		}
+		catch (Exception e) {
+			throw new ExceptionInInitializerError(e);
+		}
+	}
 
 	/** Base URI for the MCP server */
 	private final URI baseUri;
@@ -353,59 +388,86 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 			var transportContext = ctx.getOrDefault(McpTransportContext.KEY, McpTransportContext.EMPTY);
 			return Mono.from(this.httpRequestCustomizer.customize(builder, "GET", uri, null, transportContext));
 		}).flatMap(requestBuilder -> Mono.create(sink -> {
-			Disposable connection = Flux.<ResponseEvent>create(sseSink -> this.httpClient
-				.sendAsync(requestBuilder.build(),
-						responseInfo -> ResponseSubscribers.sseToBodySubscriber(responseInfo, sseSink))
-				.exceptionallyCompose(e -> {
-					sseSink.error(e);
-					return CompletableFuture.failedFuture(e);
-				}))
-				.map(responseEvent -> (ResponseSubscribers.SseResponseEvent) responseEvent)
+			Disposable connection = Flux.create(sseSink -> {
+					try {
+						this.httpClient
+							.sendAsync(requestBuilder.build(),
+									responseInfo -> {
+										try {
+											@SuppressWarnings("unchecked")
+											var subscriber = (java.net.http.HttpResponse.BodySubscriber<java.util.stream.Stream<String>>)
+													SSE_TO_BODY_SUBSCRIBER_METHOD.invoke(null, responseInfo, sseSink);
+											return subscriber;
+										}
+										catch (Exception e) {
+											throw new RuntimeException(e);
+										}
+									})
+							.exceptionallyCompose(e -> {
+								sseSink.error(e);
+								return CompletableFuture.failedFuture(e);
+							});
+					}
+					catch (Exception ex) {
+						sseSink.error(ex);
+					}
+				})
 				.flatMap(responseEvent -> {
 					if (isClosing) {
 						return Mono.empty();
 					}
-
-					int statusCode = responseEvent.responseInfo().statusCode();
-
-					if (statusCode >= 200 && statusCode < 300) {
-						try {
-							if (ENDPOINT_EVENT_TYPE.equals(responseEvent.sseEvent().event())) {
-								String messageEndpointUri = responseEvent.sseEvent().data();
-								try {
-									messageEndpointValidator.validate(uri, messageEndpointUri);
+			
+					try {
+						var responseInfo = (java.net.http.HttpResponse.ResponseInfo) RESPONSE_EVENT_RESPONSE_INFO_METHOD
+							.invoke(responseEvent);
+						int statusCode = responseInfo.statusCode();
+			
+						if (statusCode >= 200 && statusCode < 300) {
+							try {
+								Object sseEvent = RESPONSE_EVENT_SSE_EVENT_METHOD.invoke(responseEvent);
+								String eventType = (String) SSE_EVENT_EVENT_METHOD.invoke(sseEvent);
+			
+								if (ENDPOINT_EVENT_TYPE.equals(eventType)) {
+									String messageEndpointUri = (String) SSE_EVENT_DATA_METHOD.invoke(sseEvent);
+									try {
+										messageEndpointValidator.validate(uri, messageEndpointUri);
+									}
+									catch (InvalidSseMessageEndpointException e) {
+										sink.error(e);
+										this.messageEndpointSink.tryEmitError(e);
+										return Flux.error(e);
+									}
+									if (this.messageEndpointSink.tryEmitValue(messageEndpointUri).isSuccess()) {
+										sink.success();
+										return Flux.empty(); // No further processing needed
+									}
+									else {
+										sink.error(new RuntimeException("Failed to handle SSE endpoint event"));
+									}
 								}
-								catch (InvalidSseMessageEndpointException e) {
-									sink.error(e);
-									this.messageEndpointSink.tryEmitError(e);
-									return Flux.error(e);
-								}
-								if (this.messageEndpointSink.tryEmitValue(messageEndpointUri).isSuccess()) {
+								else if (MESSAGE_EVENT_TYPE.equals(eventType)) {
+									JSONRPCMessage message = McpSchema.deserializeJsonRpcMessage(jsonMapper,
+											(String) SSE_EVENT_DATA_METHOD.invoke(sseEvent));
 									sink.success();
-									return Flux.empty(); // No further processing needed
+									return Flux.just(message);
 								}
 								else {
-									sink.error(new RuntimeException("Failed to handle SSE endpoint event"));
+									logger.debug("Received unrecognized SSE event type: {}", sseEvent);
+									sink.success();
 								}
 							}
-							else if (MESSAGE_EVENT_TYPE.equals(responseEvent.sseEvent().event())) {
-								JSONRPCMessage message = McpSchema.deserializeJsonRpcMessage(jsonMapper,
-										responseEvent.sseEvent().data());
-								sink.success();
-								return Flux.just(message);
-							}
-							else {
-								logger.debug("Received unrecognized SSE event type: {}", responseEvent.sseEvent());
-								sink.success();
+							catch (IOException e) {
+								sink.error(new McpTransportException("Error processing SSE event", e));
 							}
 						}
-						catch (IOException e) {
-							sink.error(new McpTransportException("Error processing SSE event", e));
-						}
+						return Flux.<McpSchema.JSONRPCMessage>error(
+								new RuntimeException("Failed to send message: " + responseEvent));
 					}
-					return Flux.<McpSchema.JSONRPCMessage>error(
-							new RuntimeException("Failed to send message: " + responseEvent));
-
+					catch (Exception e) {
+						sink.error(new McpTransportException("Error processing SSE event", e));
+						return Flux.empty();
+					}
+			
 				})
 				.flatMap(jsonRpcMessage -> handler.apply(Mono.just(jsonRpcMessage)))
 				.onErrorComplete(t -> {

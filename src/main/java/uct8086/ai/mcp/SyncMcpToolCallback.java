@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-package org.springframework.ai.mcp;
+package uct8086.ai.mcp;
 
 import java.util.Map;
 
-import io.modelcontextprotocol.client.McpSyncClient;
+import uct8086.ai.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
@@ -27,6 +27,7 @@ import org.apache.commons.logging.LogFactory;
 import org.jspecify.annotations.Nullable;
 
 import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.ai.mcp.ToolContextToMcpMetaConverter;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.execution.ToolExecutionException;

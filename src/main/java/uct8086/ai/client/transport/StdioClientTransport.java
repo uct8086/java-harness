@@ -2,7 +2,7 @@
  * Copyright 2024-2024 the original author or authors.
  */
 
-package io.modelcontextprotocol.client.transport;
+package uct8086.ai.client.transport;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -18,6 +18,7 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 
+import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.json.TypeRef;
 import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.spec.McpClientTransport;

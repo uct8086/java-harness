@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.springframework.ai.mcp;
+package uct8086.ai.mcp;
 
 import java.util.List;
 import java.util.Map;
@@ -26,7 +26,8 @@ import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import io.micrometer.common.util.StringUtils;
 import io.modelcontextprotocol.client.McpAsyncClient;
-import io.modelcontextprotocol.client.McpSyncClient;
+import uct8086.ai.client.McpSyncClient;
+import org.springframework.ai.mcp.AsyncMcpToolCallbackProvider;
 import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.server.McpStatelessServerFeatures;
 import io.modelcontextprotocol.server.McpSyncServerExchange;
