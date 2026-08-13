@@ -199,9 +199,21 @@ docker compose down -v
 | Redis 7 | 6379 | — | 无 |
 | PostgreSQL 17 + pgvector | 5432 | postgres | 321432 |
 
-> **说明：** MySQL 使用外部实例 `10.94.77.17:3506`（user: `root`，password: `root.2026`），不在 Docker Compose 中管理。数据库 `uct8086_ai` 需预先创建，表结构由 `schema.sql` 启动时自动创建。
+> **说明：** MySQL 使用外部实例 `10.94.77.17:3506`（user: `root`，password: `root.2026`），不在 Docker Compose 中管理。数据库 `uct8086_ai` 需预先创建，表结构通过手动执行 `docker/mysql/init/init.sql` 创建（应用启动不再自动建表）。
 > PostgreSQL 的 `vector`、`hstore`、`uuid-ossp` 扩展由 `docker/postgres/init/01-extensions.sql` 自动安装。
 > `vector_store` 表由 `PgVectorStore` 启动时自动创建（1024 维）。
+
+**MySQL 数据库初始化（手动执行一次）：**
+
+```bash
+# 1. 创建数据库（如尚未创建）
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS uct8086_ai DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# 2. 执行建表脚本（幂等，可重复执行）
+mysql -u root -p uct8086_ai < docker/mysql/init/init.sql
+```
+
+脚本会创建 `harness_session`、`harness_message`、`auth_user`、`auth_role`、`auth_user_role` 五张表，并初始化默认角色（`ROLE_USER`/`ROLE_ADMIN`）与默认管理员账号 **`admin / admin123`**（首次部署后请尽快修改密码）。
 
 **4. Ollama**（本地 Embedding，需单独安装）：
 ```bash

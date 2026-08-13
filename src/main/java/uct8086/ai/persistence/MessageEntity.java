@@ -1,9 +1,10 @@
 package uct8086.ai.persistence;
 
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
-import org.springframework.data.annotation.Id;
-import org.springframework.data.relational.core.mapping.Column;
-import org.springframework.data.relational.core.mapping.Table;
 
 import java.time.LocalDateTime;
 
@@ -11,28 +12,27 @@ import java.time.LocalDateTime;
  * Persistent representation of a single message within a session.
  */
 @Data
-@Table("harness_message")
+@TableName("harness_message")
 public class MessageEntity {
 
-    @Id
-    @Column("id")
+    @TableId(value = "id", type = IdType.AUTO)
     private Long id;
 
-    @Column("session_id")
+    @TableField("session_id")
     private String sessionId;
 
-    @Column("role")
+    @TableField("role")
     private String role;
 
-    @Column("content")
+    @TableField("content")
     private String content;
 
-    @Column("tool_calls_json")
+    @TableField("tool_calls_json")
     private String toolCallsJson;
 
-    @Column("tool_call_id")
+    @TableField("tool_call_id")
     private String toolCallId;
 
-    @Column("created_at")
+    @TableField("created_at")
     private LocalDateTime createdAt;
 }

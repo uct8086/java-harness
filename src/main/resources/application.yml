@@ -28,10 +28,10 @@ spring:
       idle-timeout: 600000
       max-lifetime: 1800000
 
-  # SQL initialization (runs schema.sql on startup)
+  # SQL initialization disabled — schema is applied manually via docker/init.sql
   sql:
     init:
-      mode: always
+      mode: never
 
   # Redis
   data:
@@ -70,6 +70,16 @@ spring:
           model: bge-m3
       chat:
         enabled: false
+
+# MyBatis-Plus
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+  global-config:
+    banner: false
+    db-config:
+      id-type: auto
 
 # pgvector (PostgreSQL with vector extension)
 pgvector:

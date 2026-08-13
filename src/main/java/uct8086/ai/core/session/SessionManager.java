@@ -1,13 +1,14 @@
 package uct8086.ai.core.session;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import uct8086.ai.common.model.AgentMessage;
 import uct8086.ai.common.model.SessionInfo;
 import uct8086.ai.persistence.MessageEntity;
-import uct8086.ai.persistence.MessageRepository;
+import uct8086.ai.persistence.MessageMapper;
 import uct8086.ai.persistence.SessionEntity;
-import uct8086.ai.persistence.SessionRepository;
+import uct8086.ai.persistence.SessionMapper;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -49,17 +50,17 @@ public class SessionManager {
     private static final TypeReference<List<SessionInfo>> SESSION_INFO_LIST_TYPE = new TypeReference<>() {};
     private static final TypeReference<List<AgentMessage>> MESSAGE_LIST_TYPE = new TypeReference<>() {};
 
-    private final SessionRepository sessionRepository;
-    private final MessageRepository messageRepository;
+    private final SessionMapper sessionMapper;
+    private final MessageMapper messageMapper;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
 
-    public SessionManager(SessionRepository sessionRepository,
-                          MessageRepository messageRepository,
+    public SessionManager(SessionMapper sessionMapper,
+                          MessageMapper messageMapper,
                           StringRedisTemplate redisTemplate,
                           ObjectMapper objectMapper) {
-        this.sessionRepository = sessionRepository;
-        this.messageRepository = messageRepository;
+        this.sessionMapper = sessionMapper;
+        this.messageMapper = messageMapper;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
     }
@@ -76,8 +77,7 @@ public class SessionManager {
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
         entity.setMessageCount(0);
-        entity.markNew(); // force INSERT for a manually-assigned UUID
-        sessionRepository.save(entity);
+        sessionMapper.insert(entity);
         invalidateListCache();
         log.info("Created session: {} ({})", name, id);
         return toConversationSession(entity);
@@ -96,23 +96,23 @@ public class SessionManager {
      * Get a session by ID.
      */
     public Optional<ConversationSession> getSession(String sessionId) {
-        return sessionRepository.findById(sessionId).map(this::toConversationSession);
+        return Optional.ofNullable(sessionMapper.selectById(sessionId)).map(this::toConversationSession);
     }
 
     /**
      * Add a message to a session (persisted to MySQL, cache invalidated).
      */
     public void addMessage(String sessionId, AgentMessage message) {
-        SessionEntity entity = sessionRepository.findById(sessionId).orElse(null);
+        SessionEntity entity = sessionMapper.selectById(sessionId);
         if (entity == null) {
             log.warn("Session not found for addMessage: {}", sessionId);
             return;
         }
-        messageRepository.save(toMessageEntity(sessionId, message));
+        messageMapper.insert(toMessageEntity(sessionId, message));
 
         entity.setMessageCount(entity.getMessageCount() + 1);
         entity.setUpdatedAt(LocalDateTime.now());
-        sessionRepository.save(entity);
+        sessionMapper.updateById(entity);
 
         invalidateMessagesCache(sessionId);
         invalidateListCache();
@@ -129,7 +129,7 @@ public class SessionManager {
             log.debug("Cache hit for messages of session {}", sessionId);
             return cached.get();
         }
-        List<MessageEntity> entities = messageRepository.findBySessionIdOrderByCreatedAtAsc(sessionId);
+        List<MessageEntity> entities = messageMapper.findBySessionIdOrderByCreatedAtAsc(sessionId);
         List<AgentMessage> messages = entities.stream().map(this::toAgentMessage).toList();
         cacheJson(cacheKey, messages);
         log.debug("Loaded {} messages for session {} from DB (cached)", messages.size(), sessionId);
@@ -145,7 +145,7 @@ public class SessionManager {
             log.debug("Cache hit for session list");
             return cached.get();
         }
-        List<SessionInfo> sessions = sessionRepository.findAllByOrderByUpdatedAtDesc().stream()
+        List<SessionInfo> sessions = sessionMapper.findAllOrderByUpdatedAtDesc().stream()
                 .map(this::toSessionInfo)
                 .toList();
         cacheJson(CACHE_SESSION_LIST, sessions);
@@ -157,11 +157,12 @@ public class SessionManager {
      * Delete a session and its messages.
      */
     public boolean deleteSession(String sessionId) {
-        if (!sessionRepository.existsById(sessionId)) {
+        if (sessionMapper.selectById(sessionId) == null) {
             return false;
         }
-        messageRepository.deleteBySessionId(sessionId);
-        sessionRepository.deleteById(sessionId);
+        messageMapper.delete(Wrappers.<MessageEntity>lambdaQuery()
+                .eq(MessageEntity::getSessionId, sessionId));
+        sessionMapper.deleteById(sessionId);
         invalidateMessagesCache(sessionId);
         invalidateListCache();
         log.info("Deleted session: {}", sessionId);
@@ -172,9 +173,9 @@ public class SessionManager {
      * Clear all sessions and messages.
      */
     public void clearAll() {
-        List<String> ids = sessionRepository.findAll().stream().map(SessionEntity::getId).toList();
-        sessionRepository.deleteAll();
-        messageRepository.deleteAll();
+        List<String> ids = sessionMapper.selectList(null).stream().map(SessionEntity::getId).toList();
+        sessionMapper.delete(null);
+        messageMapper.delete(null);
         invalidateListCache();
         ids.forEach(this::invalidateMessagesCache);
         log.info("All sessions cleared");

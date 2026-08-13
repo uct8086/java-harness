@@ -5,8 +5,33 @@ import axios from 'axios'
 const http = axios.create({
   baseURL: '/api',
   timeout: 120000,
+  withCredentials: true, // send/receive the auth_token cookie
   headers: { 'Content-Type': 'application/json' }
 })
+
+// On 401 (unauthenticated), redirect to the login page.
+http.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response && error.response.status === 401) {
+      const current = window.location.pathname
+      if (current !== '/login') {
+        window.location.href = '/login'
+      }
+    }
+    return Promise.reject(error)
+  }
+)
+
+// ---------- Auth ----------
+export const login = (username, password) =>
+  http.post('/auth/login', { username, password }).then(r => r.data)
+
+export const logout = () =>
+  http.post('/auth/logout').then(r => r.data)
+
+export const getCurrentUser = () =>
+  http.get('/auth/me').then(r => r.data)
 
 // ---------- Agent Engine ----------
 export const chat = (prompt, sessionId) =>
