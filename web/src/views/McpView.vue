@@ -74,8 +74,8 @@ async function submit() {
     error.value = 'stdio 模式需要填写 command'
     return
   }
-  if ((form.type === 'sse' || form.type === 'streamable-http') && !form.url.trim()) {
-    error.value = 'SSE/Streamable HTTP 模式需要填写 URL'
+  if (form.type === 'streamable-http' && !form.url.trim()) {
+    error.value = 'Streamable HTTP 模式需要填写 URL'
     return
   }
 
@@ -91,7 +91,7 @@ async function submit() {
         type: form.type,
         command: form.type === 'stdio' ? form.command.trim() : null,
         args: form.type === 'stdio' ? args : null,
-        url: (form.type === 'sse' || form.type === 'streamable-http') ? form.url.trim() : null
+        url: form.type === 'streamable-http' ? form.url.trim() : null
       })
     } else {
       await addMcpServer(
@@ -99,7 +99,7 @@ async function submit() {
         form.type,
         form.type === 'stdio' ? form.command.trim() : null,
         form.type === 'stdio' ? args : null,
-        (form.type === 'sse' || form.type === 'streamable-http') ? form.url.trim() : null
+        form.type === 'streamable-http' ? form.url.trim() : null
       )
     }
     cancelEdit()
@@ -190,7 +190,7 @@ onMounted(load)
               <strong class="mono">{{ s.name }}</strong>
             </div>
             <div class="row" style="gap:6px;">
-              <span class="badge" :class="(s.type === 'sse' || s.type === 'streamable-http') ? 'badge-info' : 'badge-success'">
+              <span class="badge" :class="s.type === 'streamable-http' ? 'badge-info' : 'badge-success'">
                 {{ s.type }}
               </span>
               <span class="badge" :class="s.enabled ? 'badge-success' : 'badge-warning'" style="cursor:pointer;"
@@ -227,13 +227,9 @@ onMounted(load)
               <input type="radio" v-model="form.type" value="stdio" />
               stdio（本地进程）
             </label>
-            <label class="radio-label" :class="{ active: form.type === 'sse' }">
-              <input type="radio" v-model="form.type" value="sse" />
-              SSE（旧版 HTTP）
-            </label>
             <label class="radio-label" :class="{ active: form.type === 'streamable-http' }">
               <input type="radio" v-model="form.type" value="streamable-http" />
-              Streamable HTTP（新版）
+              Streamable HTTP
             </label>
           </div>
 
@@ -244,8 +240,8 @@ onMounted(load)
             <input v-model="form.argsStr" placeholder="e.g. -y @modelcontextprotocol/server-filesystem /tmp" />
           </template>
 
-          <template v-if="form.type === 'sse' || form.type === 'streamable-http'">
-            <label>{{ form.type === 'sse' ? 'SSE URL' : 'Streamable HTTP URL' }}</label>
+          <template v-if="form.type === 'streamable-http'">
+            <label>Streamable HTTP URL</label>
             <input v-model="form.url" placeholder="http://remote-server:8080/mcp" />
           </template>
 

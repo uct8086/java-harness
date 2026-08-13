@@ -2,7 +2,6 @@ package uct8086.ai.mcp;
 
 import uct8086.ai.client.McpClient;
 import uct8086.ai.client.McpSyncClient;
-import uct8086.ai.client.transport.HttpClientSseClientTransport;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import uct8086.ai.client.transport.StdioClientTransport;
@@ -114,27 +113,15 @@ public class McpConnectionManager implements DisposableBean {
     // ---- internals ----
 
     private McpSyncClient createClient(McpServerConfig config) {
-        if ("sse".equalsIgnoreCase(config.type())) {
-            return createSseClient(config);
-        } else if ("streamable-http".equalsIgnoreCase(config.type())) {
+        if ("sse".equalsIgnoreCase(config.type()) || "streamable-http".equalsIgnoreCase(config.type())) {
+            // Both "sse" and "streamable-http" are handled by the Streamable HTTP
+            // transport. The HTTP+SSE transport was deprecated by MCP (2025-03-26) and
+            // Streamable HTTP is its backward-compatible successor, so "sse" configs
+            // are routed here too.
             return createStreamableHttpClient(config);
         } else {
             return createStdioClient(config);
         }
-    }
-
-    private McpSyncClient createSseClient(McpServerConfig config) {
-        String url = config.url();
-        URI uri = URI.create(url);
-        String baseUri = uri.getScheme() + "://" + uri.getHost()
-                + (uri.getPort() > 0 ? ":" + uri.getPort() : "");
-        String sseEndpoint = uri.getPath() + (uri.getQuery() != null ? "?" + uri.getQuery() : "");
-
-        var transport = HttpClientSseClientTransport.builder(baseUri)
-                .sseEndpoint(sseEndpoint)
-                .build();
-
-        return McpClient.sync(transport).build();
     }
 
     private McpSyncClient createStreamableHttpClient(McpServerConfig config) {
