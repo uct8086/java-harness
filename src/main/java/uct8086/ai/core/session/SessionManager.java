@@ -85,10 +85,11 @@ public class SessionManager {
 
     /**
      * Create a new unnamed session.
+     * Uses a UUID-derived suffix to avoid the concurrency race and full-table
+     * {@code count()} scan of the previous "session-<count>" naming scheme.
      */
     public ConversationSession createSession() {
-        long count = sessionRepository.count();
-        return createSession("session-" + count);
+        return createSession("session-" + UUID.randomUUID().toString().substring(0, 8));
     }
 
     /**

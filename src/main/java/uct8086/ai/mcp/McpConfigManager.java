@@ -74,14 +74,27 @@ public class McpConfigManager {
     // ---- Persistence ----
 
     private void persist() {
-        try {
-            Path parent = configFile.getParent();
-            if (parent != null && !Files.exists(parent)) {
-                Files.createDirectories(parent);
+        // Serialize writes and use atomic write (temp file + rename) to avoid
+        // concurrent interleaving and partial-read corruption.
+        synchronized (this) {
+            try {
+                Path parent = configFile.getParent();
+                if (parent != null && !Files.exists(parent)) {
+                    Files.createDirectories(parent);
+                }
+                Path tempFile = configFile.resolveSibling(configFile.getFileName() + ".tmp");
+                mapper.writeValue(tempFile.toFile(), new ArrayList<>(configs.values()));
+                try {
+                    Files.move(tempFile, configFile,
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                            java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                } catch (java.nio.file.AtomicMoveNotSupportedException ex) {
+                    Files.move(tempFile, configFile,
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+            } catch (IOException e) {
+                log.error("Failed to persist MCP configs to {}", configFile, e);
             }
-            mapper.writeValue(configFile.toFile(), new ArrayList<>(configs.values()));
-        } catch (IOException e) {
-            log.error("Failed to persist MCP configs to {}", configFile, e);
         }
     }
 

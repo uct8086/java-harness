@@ -54,11 +54,20 @@ public class BashTool extends AbstractTool {
             return ToolResult.error("Failed to start process: " + e.getMessage());
         }
 
-        // Capture output
+        // Capture output with a size cap to prevent unbounded memory growth on
+        // commands that emit huge output (e.g. `cat` on a large file).
+        final int MAX_OUTPUT_BYTES = 1_048_576; // 1 MB
         List<String> outputLines = new ArrayList<>();
+        boolean truncated = false;
+        int totalBytes = 0;
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                totalBytes += line.length() + 1; // +1 for the newline
+                if (totalBytes > MAX_OUTPUT_BYTES) {
+                    truncated = true;
+                    break;
+                }
                 outputLines.add(line);
             }
         }
@@ -71,6 +80,9 @@ public class BashTool extends AbstractTool {
 
         int exitCode = process.exitValue();
         String output = String.join("\n", outputLines);
+        if (truncated) {
+            output += "\n...[output truncated at " + MAX_OUTPUT_BYTES + " bytes]";
+        }
 
         if (exitCode != 0) {
             return new ToolResult(output, true, Map.of("exitCode", exitCode));

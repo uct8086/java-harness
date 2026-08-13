@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.DoubleAdder;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BiConsumer;
 
 /**
@@ -33,7 +35,10 @@ public class CostTracker {
     private final HarnessProperties properties;
     private final ApplicationEventPublisher eventPublisher;
     private final Map<String, TokenUsage> sessionUsage = new ConcurrentHashMap<>();
-    private volatile TokenUsage totalUsage = new TokenUsage();
+    // Atomic accumulators for thread-safe total usage aggregation (avoid lost updates).
+    private final LongAdder totalInputTokens = new LongAdder();
+    private final LongAdder totalOutputTokens = new LongAdder();
+    private final DoubleAdder totalCostAdder = new DoubleAdder();
     private final List<BiConsumer<String, CostAlert>> alertListeners = new CopyOnWriteArrayList<>();
 
     public CostTracker(HarnessProperties properties, ApplicationEventPublisher eventPublisher) {
@@ -52,13 +57,15 @@ public class CostTracker {
                 : usage;
 
         TokenUsage sessionTotal = sessionUsage.merge(sessionId, usageWithCost, TokenUsage::add);
-        totalUsage = totalUsage.add(usageWithCost);
+        totalInputTokens.add(usageWithCost.inputTokens());
+        totalOutputTokens.add(usageWithCost.outputTokens());
+        totalCostAdder.add(usageWithCost.cost());
 
         log.debug("Session [{}] cost: +¥{} (in={} out={}), session total=¥{}, global total=¥{}",
                 sessionId, String.format("%.4f", usageWithCost.cost()),
                 usageWithCost.inputTokens(), usageWithCost.outputTokens(),
                 String.format("%.4f", sessionTotal.cost()),
-                String.format("%.4f", totalUsage.cost()));
+                String.format("%.4f", totalCostAdder.sum()));
 
         if (!properties.isCostAlertEnabled()) {
             return;
@@ -69,7 +76,7 @@ public class CostTracker {
 
     private void checkBudget(String sessionId, TokenUsage sessionTotal) {
         double sessionCost = sessionTotal.cost();
-        double totalCost = totalUsage.cost();
+        double totalCost = totalCostAdder.sum();
 
         // Check session hard limit first
         double hardLimit = properties.getSessionCostHardLimit();
@@ -155,7 +162,9 @@ public class CostTracker {
      * Get total usage across all sessions.
      */
     public TokenUsage getTotalUsage() {
-        return totalUsage;
+        long input = totalInputTokens.sum();
+        long output = totalOutputTokens.sum();
+        return TokenUsage.of(input, output, totalCostAdder.sum());
     }
 
     /**
@@ -170,6 +179,8 @@ public class CostTracker {
      */
     public void resetAll() {
         sessionUsage.clear();
-        totalUsage = new TokenUsage();
+        totalInputTokens.reset();
+        totalOutputTokens.reset();
+        totalCostAdder.reset();
     }
 }

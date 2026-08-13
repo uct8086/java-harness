@@ -1,8 +1,10 @@
 package uct8086.ai.memory;
 
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -117,31 +119,42 @@ public class FileMemoryStore implements MemoryStore {
     }
 
     private void persist() {
-        try {
-            Path parent = memoryFile.getParent();
-            if (parent != null && !Files.exists(parent)) {
-                Files.createDirectories(parent);
-            }
-
-            StringBuilder sb = new StringBuilder();
-            sb.append("# UCT8086 Memory\n\n");
-
-            Map<String, List<MemoryEntry>> byCategory = entries.values().stream()
-                    .collect(Collectors.groupingBy(MemoryEntry::category));
-
-            for (var entry : byCategory.entrySet()) {
-                sb.append("## ").append(entry.getKey()).append("\n\n");
-                for (MemoryEntry mem : entry.getValue()) {
-                    sb.append("- **").append(mem.id()).append("**: ")
-                      .append(mem.content())
-                      .append(" (").append(mem.createdAt()).append(")\n");
+        // Serialize file writes to avoid concurrent interleaving/corruption, and use
+        // atomic write (temp file + rename) so readers never observe partial content.
+        synchronized (this) {
+            try {
+                Path parent = memoryFile.getParent();
+                if (parent != null && !Files.exists(parent)) {
+                    Files.createDirectories(parent);
                 }
-                sb.append("\n");
-            }
 
-            Files.writeString(memoryFile, sb.toString());
-        } catch (IOException e) {
-            log.error("Failed to persist memory to {}", memoryFile, e);
+                StringBuilder sb = new StringBuilder();
+                sb.append("# UCT8086 Memory\n\n");
+
+                Map<String, List<MemoryEntry>> byCategory = entries.values().stream()
+                        .collect(Collectors.groupingBy(MemoryEntry::category));
+
+                for (var entry : byCategory.entrySet()) {
+                    sb.append("## ").append(entry.getKey()).append("\n\n");
+                    for (MemoryEntry mem : entry.getValue()) {
+                        sb.append("- **").append(mem.id()).append("**: ")
+                          .append(mem.content())
+                          .append(" (").append(mem.createdAt()).append(")\n");
+                    }
+                    sb.append("\n");
+                }
+
+                Path tempFile = memoryFile.resolveSibling(memoryFile.getFileName() + ".tmp");
+                Files.writeString(tempFile, sb.toString());
+                try {
+                    Files.move(tempFile, memoryFile,
+                            StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException ex) {
+                    Files.move(tempFile, memoryFile, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } catch (IOException e) {
+                log.error("Failed to persist memory to {}", memoryFile, e);
+            }
         }
     }
 

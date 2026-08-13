@@ -18,8 +18,11 @@ import uct8086.ai.common.enums.PermissionMode;
  * Adapts a {@link HarnessTool} to Spring AI's {@link ToolCallback} interface.
  * Routes tool execution through {@link ToolExecutionService} for permission + hooks.
  *
- * <p>Uses a ThreadLocal to pass the execution context since the ToolCallback
- * interface does not support context parameters directly.
+ * <p>The execution context is bound per-instance (not via ThreadLocal), because
+ * Spring AI may execute tool callbacks on a different thread (e.g. the streaming
+ * path schedules tool execution on {@code Schedulers.boundedElastic()}).
+ * Each request builds its own adapters, so an instance field is request-scoped and
+ * thread-safe regardless of which thread invokes {@link #call(String)}.
  */
 public class HarnessToolCallbackAdapter implements ToolCallback {
 
@@ -27,34 +30,21 @@ public class HarnessToolCallbackAdapter implements ToolCallback {
 
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
-    private static final ThreadLocal<ToolExecutionContext> contextHolder = new ThreadLocal<>();
-
     private final HarnessTool tool;
     private final ToolExecutionService executionService;
     private final ToolDefinition toolDefinition;
+    private final ToolExecutionContext context;
 
-    public HarnessToolCallbackAdapter(HarnessTool tool, ToolExecutionService executionService) {
+    public HarnessToolCallbackAdapter(HarnessTool tool, ToolExecutionService executionService,
+            ToolExecutionContext context) {
         this.tool = tool;
         this.executionService = executionService;
+        this.context = context;
         this.toolDefinition = ToolDefinition.builder()
                 .name(tool.getName())
                 .description(tool.getDescription())
                 .inputSchema(generateInputSchema())
                 .build();
-    }
-
-    /**
-     * Set the execution context for the current thread.
-     */
-    public static void setContext(ToolExecutionContext context) {
-        contextHolder.set(context);
-    }
-
-    /**
-     * Clear the execution context for the current thread.
-     */
-    public static void clearContext() {
-        contextHolder.remove();
     }
 
     @Override
@@ -73,11 +63,11 @@ public class HarnessToolCallbackAdapter implements ToolCallback {
     public String call(String toolInput) {
         log.debug("Tool callback invoked: {} input={}", tool.getName(), toolInput);
 
-        ToolExecutionContext context = contextHolder.get();
+        ToolExecutionContext context = this.context;
         if (context == null) {
             context = new ToolExecutionContext("default", null,
                     PermissionMode.AUTO, Map.of());
-            log.warn("No execution context set for tool '{}', using default", tool.getName());
+            log.warn("No execution context bound for tool '{}', using default", tool.getName());
         }
 
         Map<String, Object> arguments;

@@ -59,24 +59,28 @@ public class SkillRegistry {
     public int size() { return skills.size(); }
 
     private void persistSkill(Skill skill) {
-        try {
-            Files.createDirectories(skillsDir);
-            // YAML frontmatter format matching SkillLoader.parse()
-            StringBuilder sb = new StringBuilder();
-            sb.append("---\n");
-            sb.append("name: ").append(skill.name()).append("\n");
-            sb.append("description: ").append(skill.description()).append("\n");
-            if (skill.metadata() != null) {
-                skill.metadata().forEach((k, v) -> {
-                    if (!"name".equals(k) && !"description".equals(k))
-                        sb.append(k).append(": ").append(v).append("\n");
-                });
+        // Serialize writes to avoid concurrent interleaving when multiple skills are
+        // registered concurrently.
+        synchronized (this) {
+            try {
+                Files.createDirectories(skillsDir);
+                // YAML frontmatter format matching SkillLoader.parse()
+                StringBuilder sb = new StringBuilder();
+                sb.append("---\n");
+                sb.append("name: ").append(skill.name()).append("\n");
+                sb.append("description: ").append(skill.description()).append("\n");
+                if (skill.metadata() != null) {
+                    skill.metadata().forEach((k, v) -> {
+                        if (!"name".equals(k) && !"description".equals(k))
+                            sb.append(k).append(": ").append(v).append("\n");
+                    });
+                }
+                sb.append("---\n\n");
+                sb.append(skill.content());
+                Files.writeString(skillsDir.resolve(skill.name() + ".md"), sb.toString());
+            } catch (IOException e) {
+                log.warn("Failed to persist skill {}: {}", skill.name(), e.getMessage());
             }
-            sb.append("---\n\n");
-            sb.append(skill.content());
-            Files.writeString(skillsDir.resolve(skill.name() + ".md"), sb.toString());
-        } catch (IOException e) {
-            log.warn("Failed to persist skill {}: {}", skill.name(), e.getMessage());
         }
     }
 }

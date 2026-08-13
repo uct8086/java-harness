@@ -133,7 +133,7 @@ logging:
   file:
     name: logs/uct8086-ai.log
   level:
-    uct8086.ai: DEBUG
+    uct8086.ai: INFO
     org.springframework.ai: INFO
   pattern:
     console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

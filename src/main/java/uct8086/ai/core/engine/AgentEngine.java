@@ -130,7 +130,7 @@ public class AgentEngine {
         systemPrompt = enrichWithRag(systemPrompt, userPrompt);
         sessionManager.addMessage(session.id(), AgentMessage.user(userPrompt));
 
-        ToolCallback[] callbacks = buildToolCallbacks();
+        ToolCallback[] callbacks = buildToolCallbacks(context);
         int maxTurns = properties.getMaxTurns();
         log.info("Starting agent loop for session {} (tools: {}, maxTurns: {})",
                 session.id(), callbacks.length, maxTurns);
@@ -138,8 +138,6 @@ public class AgentEngine {
         long startTime = System.currentTimeMillis();
 
         try {
-            HarnessToolCallbackAdapter.setContext(context);
-
             // Build the metrics-capturing advisor wrapping the official Spring AI ToolCallingAdvisor
             HarnessToolCallingAdvisor harnessAdvisor = new HarnessToolCallingAdvisor(
                     ToolCallingManager.builder().build(),
@@ -196,17 +194,15 @@ public class AgentEngine {
         } catch (Exception e) {
             log.error("Agent loop failed for session {}", session.id(), e);
             return AgentLoopResult.failure(e.getMessage(), 0, List.of(), new TokenUsage());
-        } finally {
-            HarnessToolCallbackAdapter.clearContext();
         }
     }
 
-    private ToolCallback[] buildToolCallbacks() {
+    private ToolCallback[] buildToolCallbacks(ToolExecutionContext context) {
         List<ToolCallback> callbacks = new ArrayList<>();
 
         // 1. Custom HarnessTools (via ToolRegistry)
         toolRegistry.getAll().stream()
-                .map(tool -> (ToolCallback) new HarnessToolCallbackAdapter(tool, toolExecutionService))
+                .map(tool -> (ToolCallback) new HarnessToolCallbackAdapter(tool, toolExecutionService, context))
                 .forEach(callbacks::add);
 
         // 2. MCP tools — dynamically connected from .uct8086/mcp-servers.json

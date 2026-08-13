@@ -43,8 +43,8 @@ public class HarnessProperties {
     /** Temperature for the model */
     private double temperature = 0.7;
 
-    /** Working directory for file operations */
-    private String workingDirectory = System.getProperty("user.dir");
+    /** Working directory for file operations. Null until resolved at runtime (see {@link #getWorkingDirectory()}). */
+    private String workingDirectory;
 
     /** Path to the memory file (MEMORY.md). Defaults to <workingDirectory>/.uct8086/MEMORY.md */
     private String memoryFile;
@@ -104,7 +104,13 @@ public class HarnessProperties {
     public double getTemperature() { return temperature; }
     public void setTemperature(double temperature) { this.temperature = temperature; }
 
-    public String getWorkingDirectory() { return workingDirectory; }
+    public String getWorkingDirectory() {
+        // Resolve lazily so containerized deployments get the correct runtime cwd
+        // rather than a value frozen at bean-instantiation time.
+        return workingDirectory != null && !workingDirectory.isBlank()
+                ? workingDirectory
+                : System.getProperty("user.dir");
+    }
     public void setWorkingDirectory(String workingDirectory) { this.workingDirectory = workingDirectory; }
 
     public String getMemoryFile() { return memoryFile; }

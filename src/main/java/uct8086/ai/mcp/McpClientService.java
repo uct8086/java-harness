@@ -3,6 +3,8 @@ package uct8086.ai.mcp;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
@@ -31,6 +33,8 @@ import uct8086.ai.common.model.McpServerConfig;
 public class McpClientService {
 
     private static final Logger log = LoggerFactory.getLogger(McpClientService.class);
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final McpConfigManager configManager;
     private final McpConnectionManager connectionManager;
@@ -100,7 +104,7 @@ public class McpClientService {
             if (cb.getToolDefinition().name().equals(toolName)) {
                 try {
                     String input = arguments != null && !arguments.isEmpty()
-                            ? new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(arguments)
+                            ? OBJECT_MAPPER.writeValueAsString(arguments)
                             : "{}";
                     return cb.call(input);
                 } catch (Exception e) {

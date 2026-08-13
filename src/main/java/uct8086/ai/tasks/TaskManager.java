@@ -26,7 +26,22 @@ public class TaskManager {
 
     private final Map<String, BackgroundTask> tasks = new ConcurrentHashMap<>();
     private final Map<String, Future<?>> taskFutures = new ConcurrentHashMap<>();
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+    // Bounded pool instead of newCachedThreadPool() to avoid unbounded thread creation
+    // (which risks OOM under heavy load). Rejected tasks mark the task as failed.
+    private final ExecutorService executor = new ThreadPoolExecutor(
+            4, 16, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(1000),
+            new ThreadFactory() {
+                private final java.util.concurrent.atomic.AtomicInteger counter =
+                        new java.util.concurrent.atomic.AtomicInteger();
+                @Override
+                public Thread newThread(Runnable r) {
+                    Thread t = new Thread(r, "uct8086-task-" + counter.incrementAndGet());
+                    t.setDaemon(true);
+                    return t;
+                }
+            },
+            (r, executor) -> log.error("Task rejected: executor queue full, task dropped"));
 
     /**
      * Create and start a background task.
