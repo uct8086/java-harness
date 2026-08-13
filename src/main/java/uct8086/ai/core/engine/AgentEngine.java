@@ -24,6 +24,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Component;
 
+import uct8086.ai.common.enums.PermissionMode;
 import uct8086.ai.common.model.AgentMessage;
 import uct8086.ai.common.model.TokenUsage;
 import uct8086.ai.common.model.ToolExecutionContext;
@@ -117,10 +118,13 @@ public class AgentEngine {
                 ? sessionManager.getSession(sessionId).orElseGet(() -> sessionManager.createSession())
                 : sessionManager.createSession();
 
-        permissionChecker.setMode(properties.getPermissionMode());
+        // Read the current default permission mode (per-request) instead of mutating
+        // a global singleton field, which caused concurrent requests to overwrite
+        // each other's mode.
+        PermissionMode permissionMode = permissionChecker.getMode();
         Path workingDir = Path.of(properties.getWorkingDirectory());
         ToolExecutionContext context = new ToolExecutionContext(
-                session.id(), workingDir, properties.getPermissionMode());
+                session.id(), workingDir, permissionMode);
 
         String systemPrompt = (additionalContext != null)
                 ? promptAssembler.buildSystemPrompt(additionalContext)

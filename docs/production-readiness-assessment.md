@@ -50,7 +50,7 @@
 
 `volatile PermissionMode mode` 单例字段。`AgentEngine.executeInternal` 每次请求 `setMode(...)`，`HarnessController.setPermissionMode` 也改同一全局变量。多用户并发时权限模式互相覆盖。
 
-**修复**：权限模式改为请求级/租户级，通过 context 传递，不存单例字段。
+**修复**：权限模式改为请求级/租户级，通过 context 传递，不存单例字段。详见第八节「权限模式来源统一」。
 
 ### 🟠 问题 4：黑名单可绕过 + `askUser` 被 auto-approve
 
@@ -183,11 +183,13 @@
 
 ## 八、修复记录（已完成，2026-08-13）
 
-以下 9 项已修复并通过 `mvn -o compile` 编译验证。
+以下 11 项已修复并通过 `mvn -o compile` 编译验证。
 
 | # | 问题 | 修复方式 |
 |---|------|---------|
 | 1 | ThreadLocal 权限绕过 | 弃用 `static ThreadLocal`，改为构造注入实例字段 `context`；`AgentEngine` 删 `setContext`/`clearContext`/`finally`，改为 `buildToolCallbacks(context)` |
+| 2 | context 构造签名不一致 | `ToolExecutionContext` 删除未使用的 `state` 字段 + `withState`/`getState` 死代码 + 四参构造器，只保留三参 `(sessionId, workingDirectory, permissionMode)`；`HarnessToolCallbackAdapter` 里四参 `Map.of()` 调用改三参 |
+| 3 | 权限模式全局可变 | `volatile PermissionMode mode` → `AtomicReference<PermissionMode> defaultMode`；`check()` 改为从 `context.permissionMode()` 读取（per-request）；`AgentEngine` 删 `setMode(...)`，改读 `getMode()`；构造注入 `HarnessProperties` 用配置作初始默认值（详见「权限模式来源统一」） |
 | 5 | `CostTracker` 非原子累加 | `volatile TokenUsage totalUsage` → `LongAdder totalInputTokens` + `LongAdder totalOutputTokens` + `DoubleAdder totalCostAdder` |
 | 6 | `createSession` 竞态 + count 全扫 | `session-<count>` → `session-<UUID 前 8 位>` |
 | 7 | 三处文件并发写无锁 | `FileMemoryStore`/`McpConfigManager`/`SkillRegistry` 的 persist 加 `synchronized` + 原子写（`.tmp` 临时文件 + `ATOMIC_MOVE`，回退 `REPLACE_EXISTING`） |
@@ -246,9 +248,37 @@
 - **原问题**：`sessionRepository.count()`（全表扫描）+ `createSession("session-" + count)`，并发下重名、且有性能隐患。
 - **修复后**：改为 `session-<UUID 前 8 位>`，去掉 count 全扫、消除竞态。
 
+### 权限模式来源统一（问题 3 修复的完整链路）
+
+修复前权限模式有**两个互相打架的来源**：配置文件 `uct8086.ai.permission-mode` 和运行时 `setMode`（前端设置），且 `AgentEngine` 每次请求都 `setMode(properties.getPermissionMode())`，导致前端设置经常被配置文件默认值覆盖回去。
+
+修复后的链路（前端设置**完全生效且稳定**）：
+
+```
+前端 SettingsView
+  → PUT /api/permission/mode?mode=xxx
+  → HarnessController.setPermissionMode
+  → permissionChecker.setMode(mode)          // 写入 AtomicReference<PermissionMode> defaultMode
+                                              //（只改默认值，不影响在途请求）
+  → AgentEngine 每次请求 permissionChecker.getMode()  // 读当前默认模式（只读，不再写）
+  → 构建 ToolExecutionContext（携带该 mode）
+  → 工具执行时 check() 从 context.permissionMode() 读取
+```
+
+关键变化：
+
+| 维度 | 修复前 | 修复后 |
+|------|--------|--------|
+| 前端设置是否生效 | 生效但**不可靠**（会被下个请求覆盖） | 生效且**稳定** |
+| 设置写入位置 | 全局 `volatile` 字段 | `AtomicReference` 默认模式 |
+| 请求是否写全局状态 | 是（`setMode` 覆盖） | 否（只 `getMode` 读） |
+| 配置项与运行时关系 | 打架 | 统一：配置作**初始默认值**，运行时设置**优先** |
+
+**结论**：前端权限模式设置代码无需任何改动，修复后才是真正「改一次、一直生效」。运行时前端设置优先于配置文件，配置文件只在启动时作为初始默认值。
+
 ---
 
 ## 九、遗留项（未处理，需单独排期）
 
-- **问题 2 / 3 / 4**（安全红线 P0）：context 构造签名不一致、权限模式全局 `volatile`、黑名单绕过 + `askUser` 被 auto-approve（当前写操作实际全放行）。涉及 `PermissionChecker`、`DefaultToolExecutionService` 架构级改动。
+- **问题 4**（安全红线 P0）：黑名单绕过 + `askUser` 被 auto-approve（当前写操作实际全放行）。涉及 `DefaultPermissionChecker`、`DefaultToolExecutionService`，需先设计审批机制。
 - 认证/授权、沙箱隔离、租户隔离、异步流式、状态外置、Actuator 监控等（详见文档第三至五节）。

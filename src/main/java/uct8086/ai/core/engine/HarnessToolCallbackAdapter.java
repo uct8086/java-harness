@@ -65,8 +65,7 @@ public class HarnessToolCallbackAdapter implements ToolCallback {
 
         ToolExecutionContext context = this.context;
         if (context == null) {
-            context = new ToolExecutionContext("default", null,
-                    PermissionMode.AUTO, Map.of());
+            context = new ToolExecutionContext("default", null, PermissionMode.AUTO);
             log.warn("No execution context bound for tool '{}', using default", tool.getName());
         }
 
