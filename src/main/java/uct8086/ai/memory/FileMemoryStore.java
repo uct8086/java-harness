@@ -11,8 +11,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Component;
 import uct8086.ai.core.config.HarnessProperties;
 
 /**
@@ -22,8 +20,11 @@ import uct8086.ai.core.config.HarnessProperties;
  * <p>Memory is isolated per user: each user has their own directory
  * ({@code .uct8086/memory/{userId}/MEMORY.md}) and in-memory index. Persists
  * entries to a markdown file and maintains an in-memory index for fast lookups.
+ *
+ * <p><b>Deprecated</b>: superseded by {@link MySqlMemoryStore}. This class is
+ * intentionally NOT registered as a Spring bean (no {@code @Component}) to avoid
+ * clashing with the MySQL-backed implementation. Kept for reference/fallback.
  */
-@Component
 public class FileMemoryStore implements MemoryStore {
 
     private static final Logger log = LoggerFactory.getLogger(FileMemoryStore.class);
@@ -31,7 +32,6 @@ public class FileMemoryStore implements MemoryStore {
     private final Map<Long, Map<String, MemoryEntry>> entriesByUser = new ConcurrentHashMap<>();
     private final Path memoryRoot;
 
-    @Autowired
     public FileMemoryStore(HarnessProperties properties) {
         this(resolveDefaultMemoryRoot(properties));
     }

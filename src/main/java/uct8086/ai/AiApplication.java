@@ -2,6 +2,7 @@ package uct8086.ai;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * UCT8086-AI: Open Agent Harness - Java Implementation
@@ -24,6 +25,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * </ul>
  */
 @SpringBootApplication
+@EnableScheduling
 public class AiApplication {
 
     public static void main(String[] args) {

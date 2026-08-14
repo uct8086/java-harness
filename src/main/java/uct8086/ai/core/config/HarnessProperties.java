@@ -21,6 +21,10 @@ public class HarnessProperties {
     @Getter
     private int maxTurns = 50;
 
+    /** Maximum number of past messages to inject into the prompt as conversation history */
+    @Getter
+    private int maxHistoryMessages = 10;
+
     /** Whether to enable API retry with exponential backoff */
     private boolean retryEnabled = true;
 
