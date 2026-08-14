@@ -273,6 +273,19 @@ public class AgentEngine {
      */
     public void executeStream(Long userId, String userPrompt, String sessionId,
                               SseEmitter emitter) {
+        // Enforce per-user cost quota BEFORE dispatching (circuit breaker).
+        try {
+            costTracker.assertQuota(userId);
+        } catch (Exception e) {
+            try {
+                emitter.send(SseEmitter.event().name("error")
+                        .data(java.util.Map.of("message",
+                                e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())));
+            } catch (Exception ignored) {
+            }
+            emitter.completeWithError(e);
+            return;
+        }
         streamExecutor.submit(() -> executeInternalStream(userId, userPrompt, sessionId, emitter));
     }
 
@@ -286,6 +299,9 @@ public class AgentEngine {
      */
     @SuppressWarnings("unchecked")
     private AgentLoopResult executeInternal(Long userId, String userPrompt, String sessionId, String additionalContext) {
+        // Enforce per-user cost quota BEFORE processing (circuit breaker).
+        costTracker.assertQuota(userId);
+
         SessionManager.ConversationSession session = (sessionId != null)
                 ? sessionManager.getSession(userId, sessionId).orElseGet(() -> sessionManager.createSession(userId))
                 : sessionManager.createSession(userId);

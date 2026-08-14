@@ -3,10 +3,15 @@ package uct8086.ai.core.cost;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
+import uct8086.ai.auth.entity.UserEntity;
+import uct8086.ai.auth.mapper.UserMapper;
+import uct8086.ai.common.exception.CostLimitExceededException;
 import uct8086.ai.common.model.TokenUsage;
 import uct8086.ai.core.config.HarnessProperties;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -32,18 +37,101 @@ public class CostTracker {
 
     private static final Logger log = LoggerFactory.getLogger(CostTracker.class);
 
+    /** Redis key prefix for the circuit-breaker flag: harness:cost:breaker:{userId} */
+    private static final String BREAKER_PREFIX = "harness:cost:breaker:";
+
     private final HarnessProperties properties;
     private final ApplicationEventPublisher eventPublisher;
     private final CostUsageMapper costUsageMapper;
+    private final StringRedisTemplate redisTemplate;
+    private final UserMapper userMapper;
 
     private final List<BiConsumer<String, CostAlert>> alertListeners = new CopyOnWriteArrayList<>();
 
     public CostTracker(HarnessProperties properties,
                        ApplicationEventPublisher eventPublisher,
-                       CostUsageMapper costUsageMapper) {
+                       CostUsageMapper costUsageMapper,
+                       StringRedisTemplate redisTemplate,
+                       UserMapper userMapper) {
         this.properties = properties;
         this.eventPublisher = eventPublisher;
         this.costUsageMapper = costUsageMapper;
+        this.redisTemplate = redisTemplate;
+        this.userMapper = userMapper;
+    }
+
+    /**
+     * Enforce the user-level cost quota before a request is processed. If the user's
+     * total cost has exceeded the configured hard limit, throws
+     * {@link CostLimitExceededException} to reject the request (circuit breaker).
+     */
+    public void assertQuota(Long userId) {
+        if (!properties.isCostBreakerEnabled()) {
+            return;
+        }
+        double hardLimit = properties.getUserCostHardLimit();
+        if (hardLimit <= 0) {
+            return;
+        }
+        double totalCost = getTotalUsage(userId).cost();
+        if (totalCost >= hardLimit) {
+            markBreaker(userId);
+            throw new CostLimitExceededException(String.format(
+                    "用户「%s」成本已达上限 ¥%.4f（上限 ¥%.4f），已熔断，请管理员调整配额",
+                    resolveUserName(userId), totalCost, hardLimit));
+        }
+    }
+
+    /**
+     * Resolve a display-friendly name for the user (display name, falling back to
+     * username, then the raw id).
+     */
+    private String resolveUserName(Long userId) {
+        try {
+            UserEntity user = userMapper.selectById(userId);
+            if (user != null) {
+                if (user.getDisplayName() != null && !user.getDisplayName().isBlank()) {
+                    return user.getDisplayName();
+                }
+                if (user.getUsername() != null && !user.getUsername().isBlank()) {
+                    return user.getUsername();
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to resolve user name for {}", userId, e);
+        }
+        return String.valueOf(userId);
+    }
+
+    /**
+     * Whether the user is currently circuit-broken (over quota).
+     */
+    public boolean isBreakerTripped(Long userId) {
+        try {
+            return Boolean.TRUE.equals(redisTemplate.hasKey(BREAKER_PREFIX + userId));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void markBreaker(Long userId) {
+        try {
+            redisTemplate.opsForValue().set(BREAKER_PREFIX + userId, "1", Duration.ofHours(24));
+        } catch (Exception e) {
+            log.warn("Failed to set circuit-breaker flag for user {}", userId, e);
+        }
+    }
+
+    /**
+     * Reset the circuit-breaker flag for a user (admin action after adjusting quota).
+     */
+    public void resetBreaker(Long userId) {
+        try {
+            redisTemplate.delete(BREAKER_PREFIX + userId);
+            log.info("Circuit breaker reset for user {}", userId);
+        } catch (Exception e) {
+            log.warn("Failed to reset circuit-breaker flag for user {}", userId, e);
+        }
     }
 
     /**
@@ -112,6 +200,16 @@ public class CostTracker {
                     String.format("%.4f", totalCost),
                     String.format("%.4f", totalWarn));
             fireAlert(null, alert);
+        }
+
+        // User-level hard limit → trip the circuit breaker.
+        double userHardLimit = properties.getUserCostHardLimit();
+        if (properties.isCostBreakerEnabled() && userHardLimit > 0 && totalCost >= userHardLimit) {
+            markBreaker(userId);
+            log.error("COST USER HARD LIMIT EXCEEDED: user={}, totalCost=¥{}, limit=¥{}, circuit breaker tripped",
+                    userId,
+                    String.format("%.4f", totalCost),
+                    String.format("%.4f", userHardLimit));
         }
     }
 

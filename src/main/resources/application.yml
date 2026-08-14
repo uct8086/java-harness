@@ -146,7 +146,14 @@ uct8086:
     session-cost-warn-threshold: 5.0
 
     # Hard limit for per-session cost (CNY yuan). Logs ERROR. 0 = disabled.
-    session-cost-hard-limit: 0.0
+    session-cost-hard-limit: 10.0
+
+    # Hard limit for a user's total cost (CNY yuan). When exceeded, the user is
+    # circuit-broken and further requests are rejected. 0 = disabled.
+    user-cost-hard-limit: 10.0
+
+    # Whether to enable the cost circuit breaker (reject requests when limits exceeded).
+    cost-breaker-enabled: true
 
     # Warning threshold for total accumulated cost across all sessions (CNY yuan).
     total-cost-warn-threshold: 100.0

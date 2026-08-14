@@ -76,9 +76,18 @@ public class HarnessProperties {
     @Getter
     private double sessionCostHardLimit = 0.0;
 
+    /** Hard limit for a user's total accumulated cost in CNY (yuan). When exceeded, the
+     *  user is circuit-broken (requests rejected). 0 = disabled */
+    @Getter
+    private double userCostHardLimit = 0.01;
+
     /** Warning threshold for total accumulated cost across all sessions in CNY. Default 100.0 */
     @Getter
     private double totalCostWarnThreshold = 100.0;
+
+    /** Whether cost circuit breaker is enabled (reject requests when hard limits exceeded) */
+    @Getter
+    private boolean costBreakerEnabled = true;
 
     /** Input price per 1M tokens (USD). Overrides TokenUsage default */
     @Getter

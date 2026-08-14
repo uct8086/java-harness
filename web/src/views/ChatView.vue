@@ -103,7 +103,16 @@ async function sendStream(text, assistantMsg) {
   })
   if (!resp.ok) {
     clearTimeout(timeoutId)
-    throw new Error(`HTTP ${resp.status}`)
+    // Try to extract a human-readable message from the backend JSON error body
+    // (e.g. cost-limit-exceeded circuit breaker notice).
+    let msg = `HTTP ${resp.status}`
+    try {
+      const body = await resp.json()
+      if (body && body.message) msg = body.message
+    } catch (e) { /* non-JSON body, keep default */ }
+    const err = new Error(msg)
+    err.status = resp.status
+    throw err
   }
   const reader = resp.body.getReader()
   const decoder = new TextDecoder()
