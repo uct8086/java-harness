@@ -101,3 +101,18 @@ INSERT INTO `auth_user_role` (`user_id`, `role_id`)
 SELECT u.id, r.id FROM `auth_user` u, `auth_role` r
 WHERE u.username = 'admin' AND r.name = 'ROLE_ADMIN'
 ON DUPLICATE KEY UPDATE `user_id` = `user_id`;
+
+-- ------------------------------------------------------------
+-- 9. 初始化测试用户：Cruise / 321432（普通用户）
+-- ------------------------------------------------------------
+INSERT INTO `auth_user` (`username`, `password_hash`, `display_name`, `enabled`, `created_at`, `updated_at`)
+VALUES ('Cruise', '$2a$10$dcPsx28TUC1XoVXlycFT5.Pg9OhB2.0Adf7VNAHl9aFVhthsQvAgy', 'Cruise', 1, NOW(3), NOW(3))
+ON DUPLICATE KEY UPDATE `username` = `username`;
+
+-- ------------------------------------------------------------
+-- 10. 关联 Cruise 用户到 USER 角色
+-- ------------------------------------------------------------
+INSERT INTO `auth_user_role` (`user_id`, `role_id`)
+SELECT u.id, r.id FROM `auth_user` u, `auth_role` r
+WHERE u.username = 'Cruise' AND r.name = 'ROLE_USER'
+ON DUPLICATE KEY UPDATE `user_id` = `user_id`;

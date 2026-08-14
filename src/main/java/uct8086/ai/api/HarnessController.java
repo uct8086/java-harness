@@ -1,6 +1,7 @@
 package uct8086.ai.api;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import uct8086.ai.auth.service.CurrentUser;
 import uct8086.ai.common.enums.PermissionMode;
 import uct8086.ai.common.model.AgentMessage;
@@ -107,6 +108,32 @@ public class HarnessController {
     public AgentLoopResult chatWithContext(@RequestBody ChatWithContextRequest request) {
         Long userId = CurrentUser.requireId();
         return agentEngine.execute(userId, request.prompt(), request.sessionId(), request.additionalContext());
+    }
+
+    /**
+     * Streaming chat via SSE. Returns events as the agent loop progresses:
+     * {@code response} (final text), {@code done} (usage stats), or {@code error}.
+     */
+    @PostMapping(value = "/chat/stream", produces = org.springframework.http.MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter chatStream(@RequestBody ChatRequest request) {
+        Long userId = CurrentUser.id();
+        if (userId == null) {
+            // Auth is permitAll for this endpoint (to avoid async dispatch issues),
+            // but we still require a valid cookie. Return an immediately-completed
+            // emitter that signals "unauthorized".
+            SseEmitter unauthorized = new SseEmitter();
+            try {
+                unauthorized.send(SseEmitter.event().name("error").data("未登录"));
+                unauthorized.complete();
+            } catch (Exception ignored) {
+                unauthorized.completeWithError(new RuntimeException("unauthorized"));
+            }
+            return unauthorized;
+        }
+        // Timeout: 5 minutes (agent loop can be long with multiple turns)
+        SseEmitter emitter = new SseEmitter(5 * 60 * 1000L);
+        agentEngine.executeStream(userId, request.prompt(), request.sessionId(), emitter);
+        return emitter;
     }
 
     // ========== Sessions ==========

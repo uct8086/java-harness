@@ -4,6 +4,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
@@ -11,8 +16,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
+import reactor.core.publisher.Flux;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.openai.OpenAiChatOptions;
@@ -36,6 +44,7 @@ import uct8086.ai.core.session.SessionManager;
 import uct8086.ai.core.tool.ToolExecutionService;
 import uct8086.ai.core.tool.ToolRegistry;
 import uct8086.ai.mcp.McpConnectionManager;
+import uct8086.ai.metrics.ChatMetrics;
 
 @Component
 public class AgentEngine {
@@ -52,6 +61,7 @@ public class AgentEngine {
     private final HarnessProperties properties;
     private final ApplicationContext applicationContext;
     private final McpConnectionManager mcpConnectionManager;
+    private final ChatMetrics chatMetrics;
 
     @Autowired(required = false)
     @Qualifier("pgVectorStore")
@@ -66,7 +76,8 @@ public class AgentEngine {
                        PermissionChecker permissionChecker,
                        HarnessProperties properties,
                        ApplicationContext applicationContext,
-                       McpConnectionManager mcpConnectionManager) {
+                       McpConnectionManager mcpConnectionManager,
+                       ChatMetrics chatMetrics) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
         this.toolExecutionService = toolExecutionService;
@@ -77,6 +88,7 @@ public class AgentEngine {
         this.properties = properties;
         this.applicationContext = applicationContext;
         this.mcpConnectionManager = mcpConnectionManager;
+        this.chatMetrics = chatMetrics;
     }
 
     private String enrichWithRag(String systemPrompt, String userPrompt) {
@@ -104,6 +116,27 @@ public class AgentEngine {
         return executeInternal(userId, userPrompt, sessionId, additionalContext);
     }
 
+    // Bounded thread pool for streaming agent execution (avoids unbounded thread creation).
+    private final ExecutorService streamExecutor = new ThreadPoolExecutor(
+            2, 8, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(50),
+            r -> {
+                Thread t = new Thread(r, "uct8086-stream-" + System.nanoTime());
+                t.setDaemon(true);
+                return t;
+            },
+            (r, executor) -> log.error("Stream task rejected: executor queue full"));
+
+    /**
+     * Execute the agent loop asynchronously, pushing SSE events to the given emitter
+     * token-by-token (true streaming). The caller (controller) returns immediately;
+     * results arrive via the emitter as {@code token}, {@code tool} and {@code done} events.
+     */
+    public void executeStream(Long userId, String userPrompt, String sessionId,
+                              SseEmitter emitter) {
+        streamExecutor.submit(() -> executeInternalStream(userId, userPrompt, sessionId, emitter));
+    }
+
     /**
      * Core agent loop using Spring AI 2.0's official {@link ToolCallingAdvisor}
      * with a custom {@link HarnessToolCallingAdvisor} wrapper to capture turn/tool-call metrics.
@@ -126,12 +159,12 @@ public class AgentEngine {
         ToolExecutionContext context = new ToolExecutionContext(
                 session.id(), workingDir, permissionMode);
 
-        String systemPrompt = (additionalContext != null)
+        String baseSystemPrompt = (additionalContext != null)
                 ? promptAssembler.buildSystemPrompt(additionalContext)
                 : (properties.getSystemPrompt() != null
                         ? properties.getSystemPrompt()
                         : promptAssembler.buildSystemPrompt());
-        systemPrompt = enrichWithRag(systemPrompt, userPrompt);
+        final String systemPrompt = enrichWithRag(baseSystemPrompt, userPrompt);
         sessionManager.addMessage(userId, session.id(), AgentMessage.user(userPrompt));
 
         ToolCallback[] callbacks = buildToolCallbacks(userId, context);
@@ -153,7 +186,12 @@ public class AgentEngine {
             OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
                     .toolCallbacks(List.of(callbacks))
                     .model(properties.getModel())
-                    .temperature(properties.getTemperature());
+                    .temperature(properties.getTemperature())
+                    // Ask the (OpenAI-compatible) provider to include token usage in
+                    // the final streaming chunk, so we can track real token counts.
+                    .streamOptions(OpenAiChatOptions.StreamOptions.builder()
+                            .includeUsage(true)
+                            .build());
 
             ChatClient chatClient = ChatClient.builder(chatModel)
                     .defaultSystem(systemPrompt)
@@ -193,11 +231,170 @@ public class AgentEngine {
 
             sessionManager.addMessage(userId, session.id(), AgentMessage.assistant(response));
             costTracker.record(userId, session.id(), usage);
+            chatMetrics.recordSuccess(elapsed, usage.inputTokens(), usage.outputTokens(), turns, toolCallRecords.size());
             return AgentLoopResult.success(response, turns, toolCallRecords, usage);
 
         } catch (Exception e) {
+            long elapsed = System.currentTimeMillis() - startTime;
             log.error("Agent loop failed for session {}", session.id(), e);
+            chatMetrics.recordFailure(elapsed);
             return AgentLoopResult.failure(e.getMessage(), 0, List.of(), new TokenUsage());
+        }
+    }
+
+    /**
+     * Streaming variant of the agent loop: subscribes to Spring AI's {@code stream()}
+     * Flux and pushes each text token (and tool-call events) to the SSE emitter in
+     * real time, so the frontend renders text as it is generated (typewriter effect).
+     */
+    private void executeInternalStream(Long userId, String userPrompt, String sessionId,
+                                       SseEmitter emitter) {
+        SessionManager.ConversationSession session = (sessionId != null)
+                ? sessionManager.getSession(userId, sessionId).orElseGet(() -> sessionManager.createSession(userId))
+                : sessionManager.createSession(userId);
+
+        PermissionMode permissionMode = permissionChecker.getMode();
+        Path workingDir = Path.of(properties.getWorkingDirectory());
+        ToolExecutionContext context = new ToolExecutionContext(session.id(), workingDir, permissionMode);
+
+        String baseSystemPrompt = properties.getSystemPrompt() != null
+                        ? properties.getSystemPrompt()
+                        : promptAssembler.buildSystemPrompt();
+        final String systemPrompt = enrichWithRag(baseSystemPrompt, userPrompt);
+        sessionManager.addMessage(userId, session.id(), AgentMessage.user(userPrompt));
+
+        ToolCallback[] callbacks = buildToolCallbacks(userId, context);
+        long startTime = System.currentTimeMillis();
+
+        // Accumulators for the full response (tokens arrive as deltas).
+        StringBuilder fullText = new StringBuilder();
+        final long[] inputTokens = {0};
+        final long[] outputTokens = {0};
+        final int[] toolCallCount = {0};
+
+        try {
+            HarnessToolCallingAdvisor harnessAdvisor = new HarnessToolCallingAdvisor(
+                    ToolCallingManager.builder().build(),
+                    ToolCallingAdvisor.DEFAULT_ORDER,
+                    true);
+
+            OpenAiChatOptions.Builder optionsBuilder = OpenAiChatOptions.builder()
+                    .toolCallbacks(List.of(callbacks))
+                    .model(properties.getModel())
+                    .temperature(properties.getTemperature())
+                    // Ask the (OpenAI-compatible) provider to include token usage in
+                    // the final streaming chunk, so we can track real token counts.
+                    .streamOptions(OpenAiChatOptions.StreamOptions.builder()
+                            .includeUsage(true)
+                            .build());
+
+            ChatClient chatClient = ChatClient.builder(chatModel)
+                    .defaultSystem(systemPrompt)
+                    .defaultOptions(optionsBuilder)
+                    .defaultAdvisors(harnessAdvisor)
+                    .build();
+
+            // Push the session id first so the frontend can track the conversation.
+            emitter.send(SseEmitter.event().name("session")
+                    .data(java.util.Map.of("sessionId", session.id())));
+
+            Flux<ChatClientResponse> flux = chatClient.prompt()
+                    .user(userPrompt)
+                    .stream()
+                    .chatClientResponse();
+
+            flux.doOnNext(clientResponse -> {
+                ChatResponse chatResponse = clientResponse.chatResponse();
+                if (chatResponse == null) return;
+
+                // Track token usage if metadata is present.
+                TokenUsage usage = extractUsage(chatResponse);
+                if (usage.inputTokens() > 0) inputTokens[0] = usage.inputTokens();
+                if (usage.outputTokens() > 0) outputTokens[0] = usage.outputTokens();
+
+                Generation generation = chatResponse.getResult();
+                if (generation == null) return;
+                AssistantMessage output = generation.getOutput();
+
+                // Tool call round: signal the frontend and don't append to text.
+                if (output.hasToolCalls()) {
+                    output.getToolCalls().forEach(tc -> {
+                        toolCallCount[0]++;
+                        try {
+                            emitter.send(SseEmitter.event().name("tool")
+                                    .data(java.util.Map.of("name", tc.name())));
+                        } catch (Exception ignored) {
+                        }
+                    });
+                    return;
+                }
+
+                // Text delta: append and push as a token event.
+                String delta = output.getText();
+                if (delta != null && !delta.isEmpty()) {
+                    fullText.append(delta);
+                    try {
+                        emitter.send(SseEmitter.event().name("token")
+                                .data(java.util.Map.of("text", delta)));
+                    } catch (Exception ignored) {
+                    }
+                }
+            }).doOnComplete(() -> {
+                try {
+                    String response = fullText.toString();
+
+                    // Fallback: if the streaming provider did not return usage metadata
+                    // (DeepSeek streaming omits usage without stream_options.include_usage),
+                    // estimate tokens so cost tracking still works.
+                    long in = inputTokens[0] > 0 ? inputTokens[0]
+                            : estimateTokens(systemPrompt) + estimateTokens(userPrompt);
+                    long out = outputTokens[0] > 0 ? outputTokens[0]
+                            : estimateTokens(response);
+
+                    TokenUsage usage = TokenUsage.of(in, out);
+                    sessionManager.addMessage(userId, session.id(), AgentMessage.assistant(response));
+                    costTracker.record(userId, session.id(), usage);
+                    chatMetrics.recordSuccess(System.currentTimeMillis() - startTime,
+                            in, out, 1, toolCallCount[0]);
+
+                    final long finalIn = in;
+                    final long finalOut = out;
+                    final long finalTotal = usage.totalTokens();
+                    final double finalCost = usage.cost();
+                    emitter.send(SseEmitter.event().name("done")
+                            .data(java.util.Map.of(
+                                    "sessionId", session.id(),
+                                    "inputTokens", finalIn,
+                                    "outputTokens", finalOut,
+                                    "totalTokens", finalTotal,
+                                    "cost", finalCost)));
+                    emitter.complete();
+                } catch (Exception e) {
+                    log.error("Stream completion failed", e);
+                    emitter.completeWithError(e);
+                }
+            }).doOnError(e -> {
+                log.error("Agent stream failed for session {}", session.id(), e);
+                chatMetrics.recordFailure(System.currentTimeMillis() - startTime);
+                try {
+                    emitter.send(SseEmitter.event().name("error")
+                            .data(java.util.Map.of("message",
+                                    e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())));
+                } catch (Exception ignored) {
+                }
+                emitter.completeWithError(e);
+            }).subscribe();
+
+        } catch (Exception e) {
+            log.error("Failed to start agent stream for session {}", session.id(), e);
+            chatMetrics.recordFailure(System.currentTimeMillis() - startTime);
+            try {
+                emitter.send(SseEmitter.event().name("error")
+                        .data(java.util.Map.of("message",
+                                e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())));
+            } catch (Exception ignored) {
+            }
+            emitter.completeWithError(e);
         }
     }
 
@@ -225,5 +422,19 @@ public class AgentEngine {
         return TokenUsage.of(
                 usage.getPromptTokens(),
                 usage.getCompletionTokens() != null ? usage.getCompletionTokens() : 0L);
+    }
+
+    /**
+     * Rough token estimate for a string, used as a fallback when the streaming
+     * provider does not return usage metadata (DeepSeek streaming returns usage only
+     * in the final chunk, and only when {@code stream_options.include_usage} is set —
+     * which Spring AI does not pass by default).
+     *
+     * <p>Heuristic: mixed CJK/Latin text averages ~2 chars per token, so divide by 2.
+     * This is intentionally approximate; cost accounting remains approximately correct.
+     */
+    private static long estimateTokens(String text) {
+        if (text == null || text.isEmpty()) return 0L;
+        return Math.max(1L, text.length() / 2L);
     }
 }

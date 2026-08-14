@@ -17,6 +17,10 @@ const streamEl = ref(null)
 
 async function loadSessions() {
   try { sessions.value = await listSessions() } catch (e) { /* optional */ }
+  // 默认选中列表里的第一个会话（若存在）
+  if (sessions.value.length && !sessionId.value) {
+    sessionId.value = sessions.value[0].id
+  }
 }
 
 async function newSession() {
@@ -51,29 +55,161 @@ async function send() {
   prompt.value = ''
   // optimistic user bubble
   messages.value.push({ role: 'USER', content: text, toolCalls: [] })
+  // placeholder assistant bubble for streaming.
+  // NOTE: push a reactive object so mutating it later triggers view updates.
+  // (Vue wraps array elements in a reactive proxy; mutating the pre-push raw
+  // object would NOT trigger reactivity, so we must reference the proxy.)
+  messages.value.push({ role: 'ASSISTANT', content: '', toolCalls: [] })
+  const assistantMsg = messages.value[messages.value.length - 1]
   await nextTick(); scrollBottom()
   try {
     const ctx = showContext.value ? additionalContext.value.trim() : ''
-    const data = ctx
-      ? await chatWithContext(text, sessionId.value, ctx)
-      : await chat(text, sessionId.value)
-    lastResult.value = data
-    if (data.success) {
-      // Append the assistant reply directly from the result so it always renders,
-      // even if the optional /sessions/{id}/messages history endpoint is unavailable.
-      messages.value.push({
-        role: 'ASSISTANT',
-        content: data.response || '',
-        toolCalls: data.toolCalls || []
-      })
+    if (ctx) {
+      // non-stream fallback for context mode
+      const data = await chatWithContext(text, sessionId.value, ctx)
+      finishAssistant(data)
     } else {
-      errorMsg.value = data.error || '模型返回失败'
+      // streaming via SSE (fetch + ReadableStream, because EventSource only supports GET)
+      await sendStream(text, assistantMsg)
     }
-    await nextTick(); scrollBottom()
   } catch (e) {
-    errorMsg.value = e.response?.data?.message || e.message || '请求失败'
+    const isAbort = e.name === 'AbortError'
+    errorMsg.value = isAbort
+      ? '请求超时或被中断，请重试'
+      : (e.response?.data?.message || e.message || '请求失败')
+    // remove empty placeholder if failed or aborted
+    if (!assistantMsg.content) {
+      messages.value = messages.value.filter(m => m !== assistantMsg)
+    }
   } finally {
     loading.value = false
+  }
+}
+
+async function sendStream(text, assistantMsg) {
+  // Use AbortController so we can forcibly close the stream on the client side
+  // (avoids the "Pending forever" symptom if the server fails to call emitter.complete()).
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => {
+    controller.abort()
+  }, 6 * 60 * 1000) // 6 min hard timeout (slightly above server's 5 min)
+
+  const resp = await fetch('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ prompt: text, sessionId: sessionId.value }),
+    signal: controller.signal
+  })
+  if (!resp.ok) {
+    clearTimeout(timeoutId)
+    throw new Error(`HTTP ${resp.status}`)
+  }
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let usage = ''
+  let finalInputTokens = 0
+  let finalOutputTokens = 0
+  let finalTotalTokens = 0
+  let finalCost = 0
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      // SSE events are separated by \n\n
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop() // keep incomplete tail
+      for (const part of parts) {
+        const lines = part.split('\n')
+        let eventName = 'message'
+        let data = ''
+        for (const line of lines) {
+          if (line.startsWith('event:')) eventName = line.slice(6).trim()
+          else if (line.startsWith('data:')) data += line.slice(5).trim()
+        }
+        // Backend sends JSON-encoded data (e.g. {"text":"..."}); parse it.
+        let payload = data
+        try { payload = JSON.parse(data) } catch (e) { /* keep as string */ }
+
+        if (eventName === 'token') {
+          // payload is { text: "delta" } — append to the assistant bubble (typewriter effect)
+          const delta = (typeof payload === 'object' && payload && 'text' in payload)
+            ? payload.text
+            : String(payload)
+          assistantMsg.content += delta
+          await nextTick(); scrollBottom()
+        } else if (eventName === 'tool') {
+          // payload is { name: "toolName" } — show a transient status
+          const toolName = (typeof payload === 'object' && payload && 'name' in payload)
+            ? payload.name
+            : String(payload)
+          assistantMsg.toolCalls = [...(assistantMsg.toolCalls || []), { name: toolName }]
+        } else if (eventName === 'session') {
+          // payload is { sessionId: "..." } — remember the session id
+          if (typeof payload === 'object' && payload && payload.sessionId) {
+            sessionId.value = payload.sessionId
+          }
+        } else if (eventName === 'done') {
+          // payload is { sessionId, inputTokens, outputTokens, totalTokens, cost }
+          if (typeof payload === 'object' && payload) {
+            finalInputTokens = payload.inputTokens || 0
+            finalOutputTokens = payload.outputTokens || 0
+            finalTotalTokens = payload.totalTokens || (finalInputTokens + finalOutputTokens)
+            finalCost = payload.cost || 0
+            usage = `${finalInputTokens} in / ${finalOutputTokens} out tokens`
+            if (payload.sessionId) sessionId.value = payload.sessionId
+          } else {
+            usage = String(payload)
+          }
+        } else if (eventName === 'error') {
+          const msg = (typeof payload === 'object' && payload && 'message' in payload)
+            ? payload.message
+            : String(payload)
+          throw new Error(msg)
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timeoutId)
+    try { reader.cancel() } catch (e) { /* already closed */ }
+  }
+
+  // If the stream completed but no response event arrived, the placeholder stays empty.
+  // The caller (send) will detect this and remove the empty placeholder.
+  lastResult.value = {
+    success: true,
+    response: assistantMsg.content,
+    turns: 0,
+    toolCalls: assistantMsg.toolCalls || [],
+    // Match the backend AgentLoopResult field name so the template (tokenUsage) works.
+    tokenUsage: {
+      inputTokens: finalInputTokens,
+      outputTokens: finalOutputTokens,
+      totalTokens: finalTotalTokens,
+      cost: finalCost
+    },
+    _streamUsage: usage
+  }
+}
+
+function finishAssistant(data) {
+  lastResult.value = data
+  const last = messages.value[messages.value.length - 1]
+  if (data.success) {
+    if (last && last.role === 'ASSISTANT') {
+      last.content = data.response || ''
+      last.toolCalls = data.toolCalls || []
+    } else {
+      messages.value.push({ role: 'ASSISTANT', content: data.response || '', toolCalls: data.toolCalls || [] })
+    }
+  } else {
+    errorMsg.value = data.error || '模型返回失败'
+    if (last && last.role === 'ASSISTANT' && !last.content) {
+      messages.value.pop()
+    }
   }
 }
 
@@ -121,7 +257,7 @@ onMounted(loadSessions)
         <div v-else-if="m.role === 'ASSISTANT'" class="bubble assistant">
           <div class="bubble-role">AI</div>
           <Markdown v-if="m.content" :content="m.content" class="bubble-body" />
-          <div v-else class="muted small">（无文本回复）</div>
+          <div v-else class="muted small typing">思考中…</div>
           <div v-if="m.toolCalls?.length" class="tool-chips">
             <span v-for="(tc, j) in m.toolCalls" :key="j" class="badge badge-info mono">🔧 {{ tc.name }}</span>
           </div>
@@ -137,11 +273,6 @@ onMounted(loadSessions)
           <pre>{{ m.content }}</pre>
         </details>
       </template>
-
-      <div v-if="loading" class="bubble assistant">
-        <div class="bubble-role">AI</div>
-        <div class="muted small typing">思考中…</div>
-      </div>
     </div>
 
     <div v-if="errorMsg" class="alert">{{ errorMsg }}</div>

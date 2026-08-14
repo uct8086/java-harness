@@ -46,6 +46,13 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 // Public auth endpoints
                 .requestMatchers("/api/auth/login", "/api/auth/logout").permitAll()
+                // Health check (for K8s probes)
+                .requestMatchers("/actuator/health").permitAll()
+                // SSE streaming endpoint: auth is handled by AuthTokenFilter (cookie-based)
+                // and CurrentUser.requireId() at controller entry. The async dispatch back
+                // from SseEmitter would otherwise hit AuthorizationFilter with an empty
+                // SecurityContext (STATELESS), causing "Access Denied".
+                .requestMatchers("/api/chat/stream").permitAll()
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 // Everything else requires authentication
                 .anyRequest().authenticated()
