@@ -116,3 +116,53 @@ INSERT INTO `auth_user_role` (`user_id`, `role_id`)
 SELECT u.id, r.id FROM `auth_user` u, `auth_role` r
 WHERE u.username = 'Cruise' AND r.name = 'ROLE_USER'
 ON DUPLICATE KEY UPDATE `user_id` = `user_id`;
+
+-- ------------------------------------------------------------
+-- 11. 记忆表（替代文件式 FileMemoryStore，按用户隔离）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `harness_memory` (
+    `id`          VARCHAR(64)  NOT NULL COMMENT '记忆ID(UUID)',
+    `user_id`     BIGINT       NOT NULL COMMENT '所属用户ID',
+    `category`    VARCHAR(64)  NOT NULL COMMENT '分类',
+    `content`     LONGTEXT     NULL COMMENT '记忆内容',
+    `created_at`  DATETIME(3)  NULL COMMENT '创建时间',
+    `updated_at`  DATETIME(3)  NULL COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_user_id` (`user_id`),
+    KEY `idx_user_category` (`user_id`, `category`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI记忆表';
+
+-- ------------------------------------------------------------
+-- 12. 成本使用明细表（替代内存 CostTracker 累计，按用户隔离）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `cost_usage` (
+    `id`             BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`        BIGINT      NOT NULL COMMENT '所属用户ID',
+    `session_id`     VARCHAR(64) NOT NULL COMMENT '会话ID',
+    `input_tokens`   BIGINT      NOT NULL DEFAULT 0 COMMENT '输入token数',
+    `output_tokens`  BIGINT      NOT NULL DEFAULT 0 COMMENT '输出token数',
+    `total_tokens`   BIGINT      NOT NULL DEFAULT 0 COMMENT '总token数',
+    `cost`           DECIMAL(20,6) NOT NULL DEFAULT 0 COMMENT '成本(CNY)',
+    `created_at`     DATETIME(3) NULL COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_user_id` (`user_id`),
+    KEY `idx_user_session` (`user_id`, `session_id`),
+    KEY `idx_created_at` (`created_at`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI成本使用明细表';
+
+-- ------------------------------------------------------------
+-- 13. 用户技能表（替代文件式用户技能，按用户隔离；系统技能仍走代码目录）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `harness_skill` (
+    `id`            BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`       BIGINT       NOT NULL COMMENT '所属用户ID',
+    `name`          VARCHAR(128) NOT NULL COMMENT '技能名',
+    `description`   VARCHAR(512) NULL COMMENT '技能描述',
+    `content`       LONGTEXT     NULL COMMENT '技能内容(Markdown)',
+    `metadata_json` TEXT         NULL COMMENT '元数据(JSON)',
+    `created_at`    DATETIME(3)  NULL COMMENT '创建时间',
+    `updated_at`    DATETIME(3)  NULL COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_user_skill` (`user_id`, `name`),
+    KEY `idx_user_id` (`user_id`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI用户技能表';

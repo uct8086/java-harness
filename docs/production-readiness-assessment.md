@@ -282,3 +282,49 @@
 
 - **问题 4**（安全红线 P0）：黑名单绕过 + `askUser` 被 auto-approve（当前写操作实际全放行）。涉及 `DefaultPermissionChecker`、`DefaultToolExecutionService`，需先设计审批机制。
 - 认证/授权、沙箱隔离、租户隔离、异步流式、状态外置、Actuator 监控等（详见文档第三至五节）。
+
+---
+
+## 十、状态外置改造（已完成，2026-08-14）
+
+针对「第四节 · 性能与可扩展性 · 第 2 点：状态不共享」的落地，将三个内存/文件态组件外置为共享存储：
+
+| 组件 | 改造前 | 改造后 |
+|------|--------|--------|
+| `CostTracker` | 内存 `ConcurrentHashMap` + `LongAdder`/`DoubleAdder`（重启清零、多实例不共享） | MySQL `cost_usage` 明细表，`record()` 插明细、`getSessionUsage`/`getTotalUsage` 用 SQL `SUM` 聚合 |
+| `FileMemoryStore` | 本地文件 `.uct8086/memory/{userId}/MEMORY.md`（多实例不共享） | MySQL `harness_memory` 表（`MySqlMemoryStore` 实现 `MemoryStore` 接口），按用户/分类/关键字查询 |
+| `TaskManager` | 内存 `ConcurrentHashMap`（重启丢任务、多实例不共享） | Redis Stream + 消费组（`harness:task:stream` / `harness-task-consumers`），任务状态存 Redis Hash `harness:task:{userId}`，任务体改可序列化 `TaskDefinition` + 注册式 `TaskHandler` |
+
+### 关键设计决策
+
+1. **CostTracker / FileMemoryStore 放 MySQL**：成本与记忆都是「长期持久化 + 跨实例共享 + 可查询追溯」的业务数据，与会话/消息同套路，迁移到 MySQL 最自然。
+2. **TaskManager 放 Redis Stream（MQ）而非 MySQL**：任务执行体是 JVM `Callable`，无法序列化进 DB。改为「任务描述（type + payload）」入队，消费者按 `taskType` 分发到注册的 `TaskHandler` 执行，实现 at-least-once 跨实例分发。任务状态存 Redis Hash，重启可恢复、多实例可见。
+3. **`FileMemoryStore` 保留但不再注册为 Bean**：移除 `@Component`，避免与 `MySqlMemoryStore` 双实现注入冲突，留作历史参考/本地回退。
+
+### 需要手动执行的 SQL（`spring.sql.init.mode: never`）
+
+新增两张表（已追加到 `docker/mysql/init/init.sql` 第 11、12 节）：
+
+```sql
+-- 记忆表
+CREATE TABLE IF NOT EXISTS `harness_memory` (
+    `id` VARCHAR(64) NOT NULL, `user_id` BIGINT NOT NULL,
+    `category` VARCHAR(64) NOT NULL, `content` LONGTEXT NULL,
+    `created_at` DATETIME(3) NULL, `updated_at` DATETIME(3) NULL,
+    PRIMARY KEY (`id`), KEY `idx_user_id` (`user_id`),
+    KEY `idx_user_category` (`user_id`, `category`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 成本明细表
+CREATE TABLE IF NOT EXISTS `cost_usage` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT, `user_id` BIGINT NOT NULL,
+    `session_id` VARCHAR(64) NOT NULL,
+    `input_tokens` BIGINT NOT NULL DEFAULT 0, `output_tokens` BIGINT NOT NULL DEFAULT 0,
+    `total_tokens` BIGINT NOT NULL DEFAULT 0, `cost` DECIMAL(20,6) NOT NULL DEFAULT 0,
+    `created_at` DATETIME(3) NULL,
+    PRIMARY KEY (`id`), KEY `idx_user_id` (`user_id`),
+    KEY `idx_user_session` (`user_id`, `session_id`), KEY `idx_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+> 注：`TaskManager` 依赖 Redis Stream（`opsForStream()`），需 Redis 5.0+（项目当前 Redis 版本满足）。若 Redis 不可用，任务创建/查询会降级失败——与 `SessionManager` 的 Redis 缓存依赖一致。

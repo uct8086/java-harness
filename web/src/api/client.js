@@ -88,6 +88,15 @@ export const listMemory = () =>
 export const addMemory = (category, content) =>
   http.post('/memory', { category, content }).then(r => r.data)
 
+export const updateMemory = (id, category, content) =>
+  http.put(`/memory/${id}`, { category, content }).then(r => r.data)
+
+export const deleteMemory = (id) =>
+  http.delete(`/memory/${id}`).then(r => r.data)
+
+export const consolidateMemory = () =>
+  http.post('/memory/consolidate').then(r => r.data)
+
 export const searchMemory = (keyword) =>
   http.get('/memory/search', { params: { keyword } }).then(r => r.data)
 
