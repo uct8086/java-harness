@@ -1,7 +1,9 @@
 package uct8086.ai.coordinator;
 
+import jakarta.annotation.PostConstruct;
 import uct8086.ai.common.enums.AgentRole;
 import uct8086.ai.tasks.TaskManager;
+import java.util.Map;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +35,21 @@ public class AgentCoordinator {
     }
 
     /**
+     * Register the {@code SUBTASK} task handler with the distributed TaskManager.
+     */
+    @PostConstruct
+    public void registerTaskHandlers() {
+        taskManager.registerHandler("SUBTASK", fields -> {
+            String name = fields.get("name");
+            String task = fields.get("task");
+            log.info("Subagent '{}' executing task: {}", name, task);
+            // In a real implementation, this would call the AgentEngine with the
+            // subagent's system prompt and task.
+            return "Subagent task completed: " + task;
+        });
+    }
+
+    /**
      * Spawn a subagent for a specific task.
      *
      * @param name         the agent name
@@ -43,13 +60,11 @@ public class AgentCoordinator {
     public Subagent spawnSubagent(Long userId, String name, String systemPrompt, String task) {
         Subagent subagent = new Subagent(name, AgentRole.SUBAGENT, systemPrompt);
 
-        // Create a background task for the subagent
-        taskManager.createTask(userId, name, "Subagent task: " + task, () -> {
-            // In a real implementation, this would call the AgentEngine
-            // with the subagent's system prompt and task
-            log.info("Subagent '{}' executing task: {}", name, task);
-            return "Subagent task completed: " + task;
-        });
+        // Enqueue a distributed task for the subagent (executed by a TaskManager
+        // consumer). The task body is a serializable definition, not a Callable.
+        taskManager.createTask(userId, name, "Subagent task: " + task,
+                "SUBTASK",
+                Map.of("name", name, "systemPrompt", systemPrompt, "task", task));
 
         log.info("Spawned subagent: {} ({})", name, subagent.id());
         return subagent;

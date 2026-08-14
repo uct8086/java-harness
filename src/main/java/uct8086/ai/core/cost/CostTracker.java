@@ -7,22 +7,20 @@ import org.springframework.stereotype.Component;
 import uct8086.ai.common.model.TokenUsage;
 import uct8086.ai.core.config.HarnessProperties;
 
+import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.DoubleAdder;
-import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BiConsumer;
 
 /**
  * Tracks token usage and cost across sessions with budget alerting.
  *
- * <p>Usage is scoped per user: each user has their own per-session and total
- * accumulation, isolated from other users.
+ * <p>Usage records are persisted to MySQL ({@code cost_usage} table) instead of
+ * in-memory accumulators, so costs survive restarts and aggregate correctly across
+ * horizontally-scaled instances. All queries are scoped per user.
  *
  * <ul>
- *   <li>Per-user, per-session and total token/cost accumulation</li>
+ *   <li>Per-user, per-session and total token/cost accumulation (via SQL SUM)</li>
  *   <li>Session-level cost warn/limit checks</li>
  *   <li>Total accumulated cost warn threshold</li>
  *   <li>Log-based alerting (WARN/ERROR)</li>
@@ -36,23 +34,22 @@ public class CostTracker {
 
     private final HarnessProperties properties;
     private final ApplicationEventPublisher eventPublisher;
-
-    // userId -> sessionId -> usage
-    private final Map<Long, Map<String, TokenUsage>> sessionUsage = new ConcurrentHashMap<>();
-    // userId -> total accumulators (atomic)
-    private final Map<Long, LongAdder> totalInputByUser = new ConcurrentHashMap<>();
-    private final Map<Long, LongAdder> totalOutputByUser = new ConcurrentHashMap<>();
-    private final Map<Long, DoubleAdder> totalCostByUser = new ConcurrentHashMap<>();
+    private final CostUsageMapper costUsageMapper;
 
     private final List<BiConsumer<String, CostAlert>> alertListeners = new CopyOnWriteArrayList<>();
 
-    public CostTracker(HarnessProperties properties, ApplicationEventPublisher eventPublisher) {
+    public CostTracker(HarnessProperties properties,
+                       ApplicationEventPublisher eventPublisher,
+                       CostUsageMapper costUsageMapper) {
         this.properties = properties;
         this.eventPublisher = eventPublisher;
+        this.costUsageMapper = costUsageMapper;
     }
 
     /**
      * Record token usage for a user + session and check budget thresholds.
+     * Persists a usage detail row, then reads back the aggregated session total
+     * to drive alerting.
      */
     public void record(Long userId, String sessionId, TokenUsage usage) {
         TokenUsage usageWithCost = usage.cost() == 0.0 && (usage.inputTokens() > 0 || usage.outputTokens() > 0)
@@ -60,29 +57,31 @@ public class CostTracker {
                         inputPrice(), outputPrice())
                 : usage;
 
-        Map<String, TokenUsage> userSessions = sessionUsage.computeIfAbsent(userId, k -> new ConcurrentHashMap<>());
-        TokenUsage sessionTotal = userSessions.merge(sessionId, usageWithCost, TokenUsage::add);
+        CostUsageEntity entity = new CostUsageEntity();
+        entity.setUserId(userId);
+        entity.setSessionId(sessionId);
+        entity.setInputTokens(usageWithCost.inputTokens());
+        entity.setOutputTokens(usageWithCost.outputTokens());
+        entity.setTotalTokens(usageWithCost.totalTokens());
+        entity.setCost(usageWithCost.cost());
+        entity.setCreatedAt(LocalDateTime.now());
+        costUsageMapper.insert(entity);
 
-        totalInputByUser.computeIfAbsent(userId, k -> new LongAdder()).add(usageWithCost.inputTokens());
-        totalOutputByUser.computeIfAbsent(userId, k -> new LongAdder()).add(usageWithCost.outputTokens());
-        totalCostByUser.computeIfAbsent(userId, k -> new DoubleAdder()).add(usageWithCost.cost());
-
-        log.debug("User [{}] session [{}] cost: +¥{} (in={} out={}), session total=¥{}, user total=¥{}",
+        log.debug("User [{}] session [{}] cost: +¥{} (in={} out={})",
                 userId, sessionId, String.format("%.4f", usageWithCost.cost()),
-                usageWithCost.inputTokens(), usageWithCost.outputTokens(),
-                String.format("%.4f", sessionTotal.cost()),
-                String.format("%.4f", totalCostByUser.get(userId).sum()));
+                usageWithCost.inputTokens(), usageWithCost.outputTokens());
 
         if (!properties.isCostAlertEnabled()) {
             return;
         }
 
+        TokenUsage sessionTotal = getSessionUsage(userId, sessionId);
         checkBudget(userId, sessionId, sessionTotal);
     }
 
     private void checkBudget(Long userId, String sessionId, TokenUsage sessionTotal) {
         double sessionCost = sessionTotal.cost();
-        double totalCost = totalCostByUser.getOrDefault(userId, new DoubleAdder()).sum();
+        double totalCost = getTotalUsage(userId).cost();
 
         double hardLimit = properties.getSessionCostHardLimit();
         if (hardLimit > 0 && sessionCost >= hardLimit) {
@@ -154,49 +153,38 @@ public class CostTracker {
     }
 
     /**
-     * Get total usage for a user + session.
+     * Get total usage for a user + session (aggregated from persisted records).
      */
     public TokenUsage getSessionUsage(Long userId, String sessionId) {
-        Map<String, TokenUsage> userSessions = sessionUsage.get(userId);
-        if (userSessions == null) {
+        UsageAggregate agg = costUsageMapper.sumByUserAndSession(userId, sessionId);
+        if (agg == null) {
             return new TokenUsage();
         }
-        return userSessions.getOrDefault(sessionId, new TokenUsage());
+        return TokenUsage.of(agg.getInputTokens(), agg.getOutputTokens(), agg.getCost());
     }
 
     /**
-     * Get total usage across all sessions for a user.
+     * Get total usage across all sessions for a user (aggregated from persisted records).
      */
     public TokenUsage getTotalUsage(Long userId) {
-        long input = totalInputByUser.getOrDefault(userId, new LongAdder()).sum();
-        long output = totalOutputByUser.getOrDefault(userId, new LongAdder()).sum();
-        double cost = totalCostByUser.getOrDefault(userId, new DoubleAdder()).sum();
-        return TokenUsage.of(input, output, cost);
+        UsageAggregate agg = costUsageMapper.sumByUser(userId);
+        if (agg == null) {
+            return new TokenUsage();
+        }
+        return TokenUsage.of(agg.getInputTokens(), agg.getOutputTokens(), agg.getCost());
     }
 
     /**
-     * Reset usage for a user + session.
+     * Reset usage for a user + session (deletes persisted records).
      */
     public void resetSession(Long userId, String sessionId) {
-        Map<String, TokenUsage> userSessions = sessionUsage.get(userId);
-        if (userSessions != null) {
-            userSessions.remove(sessionId);
-        }
+        costUsageMapper.deleteByUserAndSession(userId, sessionId);
     }
 
     /**
-     * Reset all usage for a user.
+     * Reset all usage for a user (deletes persisted records).
      */
     public void resetAll(Long userId) {
-        Map<String, TokenUsage> userSessions = sessionUsage.get(userId);
-        if (userSessions != null) {
-            userSessions.clear();
-        }
-        LongAdder in = totalInputByUser.get(userId);
-        if (in != null) in.reset();
-        LongAdder out = totalOutputByUser.get(userId);
-        if (out != null) out.reset();
-        DoubleAdder cost = totalCostByUser.get(userId);
-        if (cost != null) cost.reset();
+        costUsageMapper.deleteByUser(userId);
     }
 }

@@ -1,31 +1,49 @@
 package uct8086.ai.skills;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import uct8086.ai.core.config.HarnessProperties;
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+/**
+ * Registry for skills.
+ *
+ * <p>Two distinct skill scopes:
+ * <ul>
+ *   <li><b>System skills</b> — bundled with the application, loaded from the project
+ *       directory at startup and shared across all users. These are code assets and
+ *       remain filesystem-backed (not in MySQL).</li>
+ *   <li><b>User skills</b> — created per-user at runtime, persisted in MySQL
+ *       ({@code harness_skill} table) so they survive restarts and are shared across
+ *       horizontally-scaled instances.</li>
+ * </ul>
+ */
 @Component
 public class SkillRegistry {
 
     private static final Logger log = LoggerFactory.getLogger(SkillRegistry.class);
 
     private final SkillLoader skillLoader;
-    private final Path skillsRoot;
+    private final SkillMapper skillMapper;
+    private final ObjectMapper objectMapper;
 
     // System-wide skills loaded from the project directory at startup (shared).
     private final Map<String, Skill> systemSkills = new ConcurrentHashMap<>();
-    // Per-user skills (user id -> skill name -> skill).
-    private final Map<Long, Map<String, Skill>> userSkills = new ConcurrentHashMap<>();
 
-    public SkillRegistry(SkillLoader skillLoader, HarnessProperties properties) {
+    public SkillRegistry(SkillLoader skillLoader,
+                         SkillMapper skillMapper,
+                         ObjectMapper objectMapper,
+                         HarnessProperties properties) {
         this.skillLoader = skillLoader;
-        this.skillsRoot = Path.of(properties.getWorkingDirectory(), ".uct8086", "skills");
+        this.skillMapper = skillMapper;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -38,17 +56,24 @@ public class SkillRegistry {
     }
 
     /**
-     * Register a user-owned skill — in-memory AND persisted under the user's directory.
+     * Register a user-owned skill, persisted to MySQL.
      */
     public void register(Long userId, Skill skill) {
-        userSkills.computeIfAbsent(userId, k -> new ConcurrentHashMap<>()).put(skill.name(), skill);
-        persistSkill(userId, skill);
-        log.info("Registered skill for user {}: {} -> {}", userId, skill.name(), userSkillFile(userId, skill.name()));
+        SkillEntity existing = findByUserAndName(userId, skill.name());
+        SkillEntity entity = toEntity(userId, skill);
+        if (existing != null) {
+            entity.setId(existing.getId());
+            entity.setCreatedAt(existing.getCreatedAt());
+            skillMapper.updateById(entity);
+        } else {
+            skillMapper.insert(entity);
+        }
+        log.info("Registered skill for user {}: {}", userId, skill.name());
     }
 
     public Optional<Skill> getSkill(Long userId, String name) {
-        Map<String, Skill> map = userSkills.get(userId);
-        return map != null ? Optional.ofNullable(map.get(name)) : Optional.empty();
+        SkillEntity entity = findByUserAndName(userId, name);
+        return entity != null ? Optional.of(toSkill(entity)) : Optional.empty();
     }
 
     public Optional<String> getSkillContent(Long userId, String name) {
@@ -56,14 +81,11 @@ public class SkillRegistry {
     }
 
     /**
-     * List user-owned skills for the given user.
+     * List user-owned skills for the given user (from MySQL).
      */
     public List<Skill> listSkills(Long userId) {
-        Map<String, Skill> map = userSkills.get(userId);
-        if (map == null) {
-            return List.of();
-        }
-        return map.values().stream().sorted(Comparator.comparing(Skill::name)).toList();
+        return skillMapper.findByUserIdOrderByNameAsc(userId)
+                .stream().map(this::toSkill).toList();
     }
 
     /**
@@ -81,39 +103,66 @@ public class SkillRegistry {
     }
 
     public boolean hasSkill(Long userId, String name) {
-        Map<String, Skill> map = userSkills.get(userId);
-        return map != null && map.containsKey(name);
+        return findByUserAndName(userId, name) != null;
     }
 
     public List<String> getAllContents() {
         return systemSkills.values().stream().map(Skill::content).toList();
     }
 
-    private Path userSkillFile(Long userId, String name) {
-        return skillsRoot.resolve(String.valueOf(userId)).resolve(name + ".md");
+    // ========== Persistence helpers ==========
+
+    private SkillEntity findByUserAndName(Long userId, String name) {
+        return skillMapper.selectOne(
+                Wrappers.<SkillEntity>lambdaQuery()
+                        .eq(SkillEntity::getUserId, userId)
+                        .eq(SkillEntity::getName, name));
     }
 
-    private void persistSkill(Long userId, Skill skill) {
-        synchronized (this) {
-            try {
-                Path dir = skillsRoot.resolve(String.valueOf(userId));
-                Files.createDirectories(dir);
-                StringBuilder sb = new StringBuilder();
-                sb.append("---\n");
-                sb.append("name: ").append(skill.name()).append("\n");
-                sb.append("description: ").append(skill.description()).append("\n");
-                if (skill.metadata() != null) {
-                    skill.metadata().forEach((k, v) -> {
-                        if (!"name".equals(k) && !"description".equals(k))
-                            sb.append(k).append(": ").append(v).append("\n");
-                    });
-                }
-                sb.append("---\n\n");
-                sb.append(skill.content());
-                Files.writeString(dir.resolve(skill.name() + ".md"), sb.toString());
-            } catch (IOException e) {
-                log.warn("Failed to persist skill {} for user {}: {}", skill.name(), userId, e.getMessage());
-            }
+    private SkillEntity toEntity(Long userId, Skill skill) {
+        SkillEntity e = new SkillEntity();
+        e.setUserId(userId);
+        e.setName(skill.name());
+        e.setDescription(skill.description());
+        e.setContent(skill.content());
+        e.setMetadataJson(serializeMetadata(skill.metadata()));
+        LocalDateTime now = LocalDateTime.now();
+        e.setCreatedAt(now);
+        e.setUpdatedAt(now);
+        return e;
+    }
+
+    private Skill toSkill(SkillEntity entity) {
+        return new Skill(
+                entity.getName(),
+                entity.getDescription(),
+                entity.getContent(),
+                null,
+                deserializeMetadata(entity.getMetadataJson())
+        );
+    }
+
+    private String serializeMetadata(Map<String, String> metadata) {
+        if (metadata == null || metadata.isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(metadata);
+        } catch (Exception e) {
+            log.warn("Failed to serialize skill metadata", e);
+            return null;
+        }
+    }
+
+    private Map<String, String> deserializeMetadata(String json) {
+        if (json == null || json.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<>() {});
+        } catch (Exception e) {
+            log.warn("Failed to deserialize skill metadata", e);
+            return Map.of();
         }
     }
 }
