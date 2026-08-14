@@ -3,6 +3,12 @@ package uct8086.ai.mcp;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -10,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.stereotype.Component;
 import uct8086.ai.common.model.McpServerConfig;
+import uct8086.ai.core.config.HarnessProperties;
 
 /**
  * MCP (Model Context Protocol) client service, scoped per user.
@@ -27,11 +34,22 @@ public class McpClientService {
 
     private final McpConfigManager configManager;
     private final McpConnectionManager connectionManager;
+    private final HarnessProperties properties;
+
+    // Dedicated pool for MCP tool calls so a slow MCP server never blocks the agent
+    // loop. The actual timeout is enforced via Future.get(timeout).
+    private final ExecutorService toolCallExecutor = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "uct8086-mcp-tool-call");
+        t.setDaemon(true);
+        return t;
+    });
 
     public McpClientService(McpConfigManager configManager,
-                            McpConnectionManager connectionManager) {
+                            McpConnectionManager connectionManager,
+                            HarnessProperties properties) {
         this.configManager = configManager;
         this.connectionManager = connectionManager;
+        this.properties = properties;
     }
 
     /**
@@ -85,22 +103,58 @@ public class McpClientService {
 
     /**
      * Call an MCP tool by name for the given user.
+     *
+     * <p>The call is dispatched to a dedicated thread pool and bounded by a timeout, so
+     * a slow or unresponsive MCP server fails the call instead of blocking the agent
+     * loop indefinitely.
      */
     public String callTool(Long userId, String toolName, Map<String, Object> arguments) {
         List<ToolCallback> liveTools = connectionManager.getToolCallbacks(userId);
         for (ToolCallback cb : liveTools) {
             if (cb.getToolDefinition().name().equals(toolName)) {
+                String input;
                 try {
-                    String input = arguments != null && !arguments.isEmpty()
+                    input = arguments != null && !arguments.isEmpty()
                             ? OBJECT_MAPPER.writeValueAsString(arguments)
                             : "{}";
-                    return cb.call(input);
                 } catch (Exception e) {
-                    log.error("MCP tool call failed: {}", toolName, e);
-                    return "Error: " + e.getMessage();
+                    log.error("[MCP-CALL] userId={} tool={} 参数序列化失败: {}", userId, toolName, e.getMessage());
+                    return "Error: failed to serialize arguments: " + e.getMessage();
+                }
+
+                long timeoutSeconds = Math.max(1, properties.getMcpRequestTimeoutSeconds());
+                long start = System.currentTimeMillis();
+                log.info("[MCP-CALL] userId={} tool={} 开始调用, 参数={}, 超时={}s",
+                        userId, toolName, truncate(input, 200), timeoutSeconds);
+                Callable<String> task = () -> cb.call(input);
+                Future<String> future = toolCallExecutor.submit(task);
+                try {
+                    String result = future.get(timeoutSeconds, TimeUnit.SECONDS);
+                    long elapsed = System.currentTimeMillis() - start;
+                    log.info("[MCP-CALL] userId={} tool={} 调用成功, 耗时={}ms, 结果长度={}",
+                            userId, toolName, elapsed, result != null ? result.length() : 0);
+                    return result;
+                } catch (TimeoutException e) {
+                    future.cancel(true);
+                    long elapsed = System.currentTimeMillis() - start;
+                    log.error("[MCP-CALL] userId={} tool={} 调用超时, 超过{}s(实际等待{}ms)",
+                            userId, toolName, timeoutSeconds, elapsed);
+                    return "Error: MCP tool call timed out after " + timeoutSeconds + "s: " + toolName;
+                } catch (Exception e) {
+                    long elapsed = System.currentTimeMillis() - start;
+                    log.error("[MCP-CALL] userId={} tool={} 调用失败, 耗时={}ms: {}",
+                            userId, toolName, elapsed, e.getMessage(), e);
+                    return "Error: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
                 }
             }
         }
+        log.warn("[MCP-CALL] userId={} tool={} 未找到对应的 MCP 工具 (可用工具数={})",
+                userId, toolName, liveTools.size());
         return "MCP tool not found: " + toolName;
+    }
+
+    private static String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 }

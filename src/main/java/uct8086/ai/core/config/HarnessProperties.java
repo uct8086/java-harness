@@ -25,6 +25,11 @@ public class HarnessProperties {
     @Getter
     private int maxHistoryMessages = 10;
 
+    /** MCP tool call request timeout in seconds. A slow/unresponsive MCP server will
+     *  fail the call after this duration instead of blocking the agent loop. */
+    @Getter
+    private int mcpRequestTimeoutSeconds = 30;
+
     /** Whether to enable API retry with exponential backoff */
     private boolean retryEnabled = true;
 

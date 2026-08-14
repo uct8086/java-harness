@@ -25,6 +25,8 @@ import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.mcp.ToolContextToMcpMetaConverter;
@@ -49,6 +51,8 @@ public class SyncMcpToolCallback implements ToolCallback {
 	private static final JsonHelper jsonHelper = new JsonHelper();
 
 	private static final Log logger = LogFactory.getLog(SyncMcpToolCallback.class);
+
+	private static final Logger log = LoggerFactory.getLogger(SyncMcpToolCallback.class);
 
 	private final McpSyncClient mcpClient;
 
@@ -122,6 +126,10 @@ public class SyncMcpToolCallback implements ToolCallback {
 
 		Map<String, Object> arguments = jsonHelper.fromJsonToMap(toolCallInput);
 
+		long start = System.currentTimeMillis();
+		log.info("[MCP-TOOL] 开始调用 MCP 工具 tool={} 参数={}",
+				this.tool.name(), truncate(toolCallInput, 300));
+
 		CallToolResult response;
 		try {
 			var mcpMeta = toolContext != null ? this.toolContextToMcpMetaConverter.convert(toolContext) : null;
@@ -138,18 +146,32 @@ public class SyncMcpToolCallback implements ToolCallback {
 			response = this.mcpClient.callTool(request);
 		}
 		catch (Exception ex) {
+			long elapsed = System.currentTimeMillis() - start;
+			log.error("[MCP-TOOL] MCP 工具调用异常 tool={} 耗时={}ms: {}", this.tool.name(), elapsed, ex.getMessage(), ex);
 			logger.error("Exception while tool calling: ", ex);
 			throw new ToolExecutionException(this.getToolDefinition(), ex);
 		}
 
 		if (response.isError() != null && response.isError()) {
+			long elapsed = System.currentTimeMillis() - start;
+			log.error("[MCP-TOOL] MCP 工具返回错误 tool={} 耗时={}ms: {}", this.tool.name(), elapsed, response.content());
 			if (logger.isErrorEnabled()) {
 				logger.error("Error calling tool: " + response.content());
 			}
 			throw new ToolExecutionException(this.getToolDefinition(),
 					new IllegalStateException("Error calling tool: " + response.content()));
 		}
-		return jsonHelper.toJson(response.content());
+
+		String result = jsonHelper.toJson(response.content());
+		long elapsed = System.currentTimeMillis() - start;
+		log.info("[MCP-TOOL] MCP 工具调用成功 tool={} 耗时={}ms 结果长度={}",
+				this.tool.name(), elapsed, result != null ? result.length() : 0);
+		return result;
+	}
+
+	private static String truncate(String s, int max) {
+		if (s == null) return "";
+		return s.length() <= max ? s : s.substring(0, max) + "...";
 	}
 
 	/**

@@ -15,6 +15,9 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.stereotype.Component;
 import uct8086.ai.common.model.McpServerConfig;
+import uct8086.ai.core.config.HarnessProperties;
+
+import java.time.Duration;
 
 /**
  * Manages MCP client connections at runtime, scoped per user.
@@ -29,6 +32,7 @@ public class McpConnectionManager implements DisposableBean {
     private static final Logger log = LoggerFactory.getLogger(McpConnectionManager.class);
 
     private final McpConfigManager configManager;
+    private final HarnessProperties properties;
 
     // userId -> active MCP clients
     private final Map<Long, List<McpSyncClient>> clientsByUser = new ConcurrentHashMap<>();
@@ -37,8 +41,9 @@ public class McpConnectionManager implements DisposableBean {
     // userId -> cached tool callbacks
     private final Map<Long, List<ToolCallback>> toolCallbacksByUser = new ConcurrentHashMap<>();
 
-    public McpConnectionManager(McpConfigManager configManager) {
+    public McpConnectionManager(McpConfigManager configManager, HarnessProperties properties) {
         this.configManager = configManager;
+        this.properties = properties;
     }
 
     /**
@@ -125,7 +130,12 @@ public class McpConnectionManager implements DisposableBean {
                 .endpoint(endpoint)
                 .build();
 
-        return McpClient.sync(transport).build();
+        // Set an explicit request timeout so a slow/unresponsive MCP server fails the
+        // tool call after N seconds instead of blocking the agent loop indefinitely.
+        Duration requestTimeout = Duration.ofSeconds(Math.max(1, properties.getMcpRequestTimeoutSeconds()));
+        return McpClient.sync(transport)
+                .requestTimeout(requestTimeout)
+                .build();
     }
 
     private void closeAll(Long userId) {
