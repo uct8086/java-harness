@@ -67,6 +67,9 @@ spring:
     openai:
       api-key: ${SPRING_AI_OPENAI_API_KEY:}
       base-url: https://api.deepseek.com
+      # Request timeout (default 60s). Streamed generation with long history/skills/
+      # memories/RAG can stall >60s and get reset (StreamResetException: CANCEL).
+      timeout: 300s
       chat:
         options:
           model: deepseek-v4-pro
@@ -128,6 +131,12 @@ uct8086:
 
     # Memory file location (default: <working-directory>/.uct8086/MEMORY.md)
     # memory-file: ${user.dir}/.uct8086/MEMORY.md
+
+    # ========== Memory Auto-Consolidation ==========
+    # Cron schedule for automatically summarizing user conversations into memories.
+    # Default: every hour. See MemoryConsolidationService.
+    memory:
+      consolidation-cron: "0 0 * * * *"
 
     # ========== Cost / Budget Alerting ==========
     # Enable cost alerting (WARN/ERROR logs when budget thresholds exceeded)

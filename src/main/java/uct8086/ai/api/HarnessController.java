@@ -18,8 +18,9 @@ import uct8086.ai.mcp.McpClientService;
 import uct8086.ai.mcp.McpConfigManager;
 import uct8086.ai.mcp.McpConnectionManager;
 import uct8086.ai.common.model.McpServerConfig;
-import uct8086.ai.memory.FileMemoryStore;
 import uct8086.ai.memory.MemoryEntry;
+import uct8086.ai.memory.MemoryStore;
+import uct8086.ai.memory.MemoryConsolidationService;
 import uct8086.ai.tasks.BackgroundTask;
 import uct8086.ai.tasks.TaskManager;
 import java.util.List;
@@ -49,7 +50,8 @@ public class HarnessController {
     private final CostTracker costTracker;
     private final PermissionChecker permissionChecker;
     private final SkillRegistry skillRegistry;
-    private final FileMemoryStore memoryStore;
+    private final MemoryStore memoryStore;
+    private final MemoryConsolidationService memoryConsolidationService;
     private final TaskManager taskManager;
     private final McpClientService mcpClientService;
     private final McpConfigManager mcpConfigManager;
@@ -66,7 +68,8 @@ public class HarnessController {
                              CostTracker costTracker,
                              PermissionChecker permissionChecker,
                              SkillRegistry skillRegistry,
-                             FileMemoryStore memoryStore,
+                             MemoryStore memoryStore,
+                             MemoryConsolidationService memoryConsolidationService,
                              TaskManager taskManager,
                              McpClientService mcpClientService,
                              McpConfigManager mcpConfigManager,
@@ -78,6 +81,7 @@ public class HarnessController {
         this.permissionChecker = permissionChecker;
         this.skillRegistry = skillRegistry;
         this.memoryStore = memoryStore;
+        this.memoryConsolidationService = memoryConsolidationService;
         this.taskManager = taskManager;
         this.mcpClientService = mcpClientService;
         this.mcpConfigManager = mcpConfigManager;
@@ -227,6 +231,26 @@ public class HarnessController {
     @GetMapping("/memory/search")
     public List<MemoryEntry> searchMemory(@RequestParam String keyword) {
         return memoryStore.search(CurrentUser.requireId(), keyword);
+    }
+
+    @PutMapping("/memory/{id}")
+    public MemoryEntry updateMemory(@PathVariable String id, @RequestBody AddMemoryRequest request) {
+        MemoryEntry existing = memoryStore.get(CurrentUser.requireId(), id)
+                .orElseThrow(() -> new IllegalArgumentException("Memory not found: " + id));
+        MemoryEntry updated = new MemoryEntry(id, request.category(), request.content(),
+                existing.createdAt(), java.time.Instant.now());
+        return memoryStore.update(CurrentUser.requireId(), updated);
+    }
+
+    @DeleteMapping("/memory/{id}")
+    public Map<String, Boolean> deleteMemory(@PathVariable String id) {
+        return Map.of("deleted", memoryStore.delete(CurrentUser.requireId(), id));
+    }
+
+    /** Manually trigger memory consolidation for the current user. */
+    @PostMapping("/memory/consolidate")
+    public Map<String, Integer> consolidateMemory() {
+        return Map.of("saved", memoryConsolidationService.consolidateNow(CurrentUser.requireId()));
     }
 
     // ========== Tasks ==========

@@ -17,6 +17,8 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ChatClientResponse;
 import org.springframework.ai.chat.client.advisor.ToolCallingAdvisor;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
@@ -45,6 +47,10 @@ import uct8086.ai.core.tool.ToolExecutionService;
 import uct8086.ai.core.tool.ToolRegistry;
 import uct8086.ai.mcp.McpConnectionManager;
 import uct8086.ai.metrics.ChatMetrics;
+import uct8086.ai.skills.Skill;
+import uct8086.ai.skills.SkillRegistry;
+import uct8086.ai.memory.MemoryEntry;
+import uct8086.ai.memory.MemoryVectorService;
 
 @Component
 public class AgentEngine {
@@ -62,6 +68,8 @@ public class AgentEngine {
     private final ApplicationContext applicationContext;
     private final McpConnectionManager mcpConnectionManager;
     private final ChatMetrics chatMetrics;
+    private final SkillRegistry skillRegistry;
+    private final MemoryVectorService memoryVectorService;
 
     @Autowired(required = false)
     @Qualifier("pgVectorStore")
@@ -77,7 +85,9 @@ public class AgentEngine {
                        HarnessProperties properties,
                        ApplicationContext applicationContext,
                        McpConnectionManager mcpConnectionManager,
-                       ChatMetrics chatMetrics) {
+                       ChatMetrics chatMetrics,
+                       SkillRegistry skillRegistry,
+                       MemoryVectorService memoryVectorService) {
         this.chatModel = chatModel;
         this.toolRegistry = toolRegistry;
         this.toolExecutionService = toolExecutionService;
@@ -89,23 +99,152 @@ public class AgentEngine {
         this.applicationContext = applicationContext;
         this.mcpConnectionManager = mcpConnectionManager;
         this.chatMetrics = chatMetrics;
+        this.skillRegistry = skillRegistry;
+        this.memoryVectorService = memoryVectorService;
+    }
+
+    /**
+     * Build the base system prompt, then inject system-wide and user-owned skills
+     * so the model knows what skills are available and can apply them. Skill content
+     * is capped per skill to avoid blowing up the prompt token budget.
+     */
+    private String buildSystemPrompt(Long userId, String userPrompt, String additionalContext) {
+        String base = (additionalContext != null)
+                ? promptAssembler.buildSystemPrompt(additionalContext)
+                : (properties.getSystemPrompt() != null
+                        ? properties.getSystemPrompt()
+                        : promptAssembler.buildSystemPrompt());
+
+        List<String> systemSkills = skillRegistry.getAllContents();
+        List<String> userSkills = skillRegistry.listSkills(userId).stream().map(Skill::content).toList();
+
+        StringBuilder sb = new StringBuilder(base);
+        appendSkills(sb, "System Skills", systemSkills);
+        appendSkills(sb, "Your Skills", userSkills);
+        appendMemories(sb, userId, userPrompt);
+
+        log.info("[PROMPT-BUILD] userId={} 系统技能={} 用户技能={} 注入后systemPrompt长度={}",
+                userId, systemSkills.size(), userSkills.size(), sb.length());
+        return sb.toString();
+    }
+
+    private void appendSkills(StringBuilder sb, String title, List<String> contents) {
+        if (contents == null || contents.isEmpty()) {
+            log.info("[SKILL-INJECT] {}: 0 条 (跳过)", title);
+            return;
+        }
+        int injected = 0;
+        sb.append("\n\n## ").append(title).append("\n");
+        for (String content : contents) {
+            if (content == null || content.isBlank()) {
+                continue;
+            }
+            // Cap each skill's injected text to keep the prompt manageable.
+            String capped = content.length() > MAX_SKILL_CHARS ? content.substring(0, MAX_SKILL_CHARS) : content;
+            sb.append("\n---\n").append(capped);
+            injected++;
+        }
+        log.info("[SKILL-INJECT] {}: 注入 {} 条技能", title, injected);
+    }
+
+    /**
+     * Inject only the memories relevant to the current prompt (relevance search over
+     * the vector index) rather than all of the user's memories, keeping the prompt small.
+     */
+    private void appendMemories(StringBuilder sb, Long userId, String userPrompt) {
+        if (userPrompt == null || userPrompt.isBlank()) {
+            log.info("[MEMORY-INJECT] userPrompt 为空，跳过记忆检索");
+            return;
+        }
+        if (!memoryVectorService.isAvailable()) {
+            log.info("[MEMORY-INJECT] pgvector 不可用，跳过记忆检索 (userId={})", userId);
+            return;
+        }
+        List<MemoryEntry> relevant = memoryVectorService.search(userId, userPrompt, MAX_MEMORY_RESULTS);
+        if (relevant.isEmpty()) {
+            log.info("[MEMORY-INJECT] userId={} 无相关记忆命中，未注入", userId);
+            return;
+        }
+        sb.append("\n\n## Relevant Memories\n");
+        for (MemoryEntry m : relevant) {
+            sb.append("- [").append(m.category()).append("] ").append(m.content()).append("\n");
+        }
+        log.info("[MEMORY-INJECT] userId={} 注入 {} 条相关记忆: {}", userId, relevant.size(),
+                relevant.stream().map(MemoryEntry::category).toList());
+    }
+
+    /** Max characters of a single skill's content injected into the system prompt. */
+    private static final int MAX_SKILL_CHARS = 4000;
+
+    /** Max number of relevant memories injected per prompt. */
+    private static final int MAX_MEMORY_RESULTS = 5;
+
+    /**
+     * Load the recent conversation history (excluding the not-yet-saved current turn)
+     * and convert it to Spring AI {@link Message}s, capped to the last N messages to
+     * keep the prompt bounded.
+     */
+    private List<Message> buildHistoryMessages(Long userId, String sessionId) {
+        List<AgentMessage> history = sessionManager.getMessages(userId, sessionId);
+        if (history == null || history.isEmpty()) {
+            log.info("[HISTORY-INJECT] userId={} session={} 历史消息 0 条（首轮对话）", userId, sessionId);
+            return List.of();
+        }
+        int max = properties.getMaxHistoryMessages();
+        // Take only the most recent N messages (the current user turn is appended
+        // separately via .user(userPrompt)).
+        List<AgentMessage> recent = history.size() > max
+                ? history.subList(history.size() - max, history.size())
+                : history;
+        List<Message> result = recent.stream()
+                .filter(m -> m.content() != null && !m.content().isBlank())
+                .map(this::toSpringMessage)
+                .toList();
+        log.info("[HISTORY-INJECT] userId={} session={} 历史消息共 {} 条, 截取最近 {} 条, 实际注入 {} 条",
+                userId, sessionId, history.size(), recent.size(), result.size());
+        return result;
+    }
+
+    private Message toSpringMessage(AgentMessage m) {
+        return switch (m.role()) {
+            case ASSISTANT -> new AssistantMessage(m.content());
+            case SYSTEM -> new org.springframework.ai.chat.messages.SystemMessage(m.content());
+            default -> new UserMessage(m.content());
+        };
     }
 
     private String enrichWithRag(String systemPrompt, String userPrompt) {
-        if (vectorStore == null) return systemPrompt;
+        if (vectorStore == null) {
+            log.info("[RAG-SEARCH] pgvector 不可用，跳过 RAG");
+            return systemPrompt;
+        }
         try {
+            // Fetch a bit more, then exclude memory documents so RAG (knowledge base)
+            // and memory retrieval stay isolated.
             List<Document> docs = vectorStore.similaritySearch(
-                    SearchRequest.builder().query(userPrompt).topK(3).build());
-            if (docs.isEmpty()) return systemPrompt;
-            String context = docs.stream()
+                    SearchRequest.builder().query(userPrompt).topK(10).build());
+            long total = docs.size();
+            List<Document> kbDocs = docs.stream()
+                    .filter(d -> !MemoryVectorService.METADATA_TYPE_MEMORY.equals(
+                            d.getMetadata().get(MemoryVectorService.METADATA_TYPE)))
+                    .limit(3)
+                    .toList();
+            log.info("[RAG-SEARCH] query='{}' pgvector 返回 {} 条(排除 memory 后知识库 {} 条), 最终注入 {} 条",
+                    truncate(userPrompt, 50), total, kbDocs.size(), kbDocs.size());
+            if (kbDocs.isEmpty()) return systemPrompt;
+            String context = kbDocs.stream()
                     .map(Document::getText)
                     .collect(Collectors.joining("\n---\n"));
-            log.debug("RAG: enriched prompt with {} relevant documents", docs.size());
             return systemPrompt + "\n\n## Relevant Documents (from vector store)\n" + context;
         } catch (Exception e) {
             log.warn("RAG enrichment failed, continuing without vector context", e);
             return systemPrompt;
         }
+    }
+
+    private static String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 
     public AgentLoopResult execute(Long userId, String userPrompt, String sessionId) {
@@ -159,12 +298,12 @@ public class AgentEngine {
         ToolExecutionContext context = new ToolExecutionContext(
                 session.id(), workingDir, permissionMode);
 
-        String baseSystemPrompt = (additionalContext != null)
-                ? promptAssembler.buildSystemPrompt(additionalContext)
-                : (properties.getSystemPrompt() != null
-                        ? properties.getSystemPrompt()
-                        : promptAssembler.buildSystemPrompt());
+        String baseSystemPrompt = buildSystemPrompt(userId, userPrompt, additionalContext);
         final String systemPrompt = enrichWithRag(baseSystemPrompt, userPrompt);
+        // Load prior conversation history BEFORE persisting the current turn, so the
+        // history injected into the prompt excludes the current user message (which is
+        // appended separately via .user(...)).
+        List<Message> historyMessages = buildHistoryMessages(userId, session.id());
         sessionManager.addMessage(userId, session.id(), AgentMessage.user(userPrompt));
 
         ToolCallback[] callbacks = buildToolCallbacks(userId, context);
@@ -200,6 +339,7 @@ public class AgentEngine {
                     .build();
 
             ChatClientResponse clientResponse = chatClient.prompt()
+                    .messages(historyMessages)
                     .user(userPrompt)
                     .call()
                     .chatClientResponse();
@@ -257,10 +397,10 @@ public class AgentEngine {
         Path workingDir = Path.of(properties.getWorkingDirectory());
         ToolExecutionContext context = new ToolExecutionContext(session.id(), workingDir, permissionMode);
 
-        String baseSystemPrompt = properties.getSystemPrompt() != null
-                        ? properties.getSystemPrompt()
-                        : promptAssembler.buildSystemPrompt();
+        String baseSystemPrompt = buildSystemPrompt(userId, userPrompt, null);
         final String systemPrompt = enrichWithRag(baseSystemPrompt, userPrompt);
+        // Load prior history before persisting the current turn (see executeInternal).
+        List<Message> historyMessages = buildHistoryMessages(userId, session.id());
         sessionManager.addMessage(userId, session.id(), AgentMessage.user(userPrompt));
 
         ToolCallback[] callbacks = buildToolCallbacks(userId, context);
@@ -299,6 +439,7 @@ public class AgentEngine {
                     .data(java.util.Map.of("sessionId", session.id())));
 
             Flux<ChatClientResponse> flux = chatClient.prompt()
+                    .messages(historyMessages)
                     .user(userPrompt)
                     .stream()
                     .chatClientResponse();

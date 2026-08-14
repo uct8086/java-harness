@@ -128,24 +128,29 @@ public class DefaultPermissionChecker implements PermissionChecker {
             return PermissionResult.denied("Plan mode: all write/execute operations are blocked");
         }
 
-        // DEFAULT mode - check specific rules
-        // Check for dangerous commands in arguments
-        for (Map.Entry<String, Object> entry : arguments.entrySet()) {
-            String value = entry.getValue() != null ? entry.getValue().toString() : "";
-            if (value.isBlank()) {
-                continue;
-            }
+        // DEFAULT mode - check specific rules.
+        // Dangerous-command detection only applies to shell-executing tools
+        // (e.g. "bash"). File I/O tools like write_file legitimately contain
+        // backticks / $() / semicolons in their content, so treating every
+        // argument as a shell command causes false positives.
+        if (isShellTool(toolName)) {
+            for (Map.Entry<String, Object> entry : arguments.entrySet()) {
+                String value = entry.getValue() != null ? entry.getValue().toString() : "";
+                if (value.isBlank()) {
+                    continue;
+                }
 
-            String denied = detectDangerousCommand(value);
-            if (denied != null) {
-                return PermissionResult.denied("Dangerous command detected: " + denied);
-            }
+                String denied = detectDangerousCommand(value);
+                if (denied != null) {
+                    return PermissionResult.denied("Dangerous command detected: " + denied);
+                }
 
-            // User-supplied denied command patterns
-            String normalized = normalize(value);
-            for (String cmd : deniedCommands) {
-                if (normalized.contains(normalize(cmd))) {
-                    return PermissionResult.denied("Denied command pattern matched: " + cmd);
+                // User-supplied denied command patterns
+                String normalized = normalize(value);
+                for (String cmd : deniedCommands) {
+                    if (normalized.contains(normalize(cmd))) {
+                        return PermissionResult.denied("Denied command pattern matched: " + cmd);
+                    }
                 }
             }
         }
@@ -172,6 +177,19 @@ public class DefaultPermissionChecker implements PermissionChecker {
 
         // In DEFAULT mode, write operations need user approval
         return PermissionResult.askUser("Tool '" + toolName + "' requires approval");
+    }
+
+    /**
+     * Tools that execute shell commands. Only these tools should have their
+     * arguments scanned for dangerous-command patterns.
+     */
+    private static final Set<String> SHELL_TOOLS = Set.of("bash");
+
+    /**
+     * Whether the given tool name corresponds to a shell-executing tool.
+     */
+    private static boolean isShellTool(String toolName) {
+        return toolName != null && SHELL_TOOLS.contains(toolName);
     }
 
     /**
