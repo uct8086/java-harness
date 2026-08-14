@@ -16,9 +16,7 @@ const tab = ref('servers')    // 'servers' | 'tools'
 
 const form = reactive({
   name: '',
-  type: 'stdio',
-  command: '',
-  argsStr: '',
+  type: 'streamable-http',
   url: ''
 })
 
@@ -40,9 +38,7 @@ async function load() {
 function openAdd() {
   editing.value = null
   form.name = ''
-  form.type = 'stdio'
-  form.command = ''
-  form.argsStr = ''
+  form.type = 'streamable-http'
   form.url = ''
   error.value = ''
 }
@@ -50,9 +46,7 @@ function openAdd() {
 function openEdit(s) {
   editing.value = s.id
   form.name = s.name
-  form.type = s.type || 'stdio'
-  form.command = s.command || ''
-  form.argsStr = (s.args || []).join(' ')
+  form.type = s.type || 'streamable-http'
   form.url = s.url || ''
   error.value = ''
 }
@@ -70,18 +64,10 @@ async function submit() {
     error.value = '名称不能为空'
     return
   }
-  if (form.type === 'stdio' && !form.command.trim()) {
-    error.value = 'stdio 模式需要填写 command'
-    return
-  }
   if (form.type === 'streamable-http' && !form.url.trim()) {
     error.value = 'Streamable HTTP 模式需要填写 URL'
     return
   }
-
-  const args = form.argsStr.trim()
-    ? form.argsStr.trim().split(/\s+/)
-    : []
 
   saving.value = true
   try {
@@ -89,17 +75,13 @@ async function submit() {
       await updateMcpServer(editing.value, {
         name: form.name.trim(),
         type: form.type,
-        command: form.type === 'stdio' ? form.command.trim() : null,
-        args: form.type === 'stdio' ? args : null,
-        url: form.type === 'streamable-http' ? form.url.trim() : null
+        url: form.url.trim()
       })
     } else {
       await addMcpServer(
         form.name.trim(),
         form.type,
-        form.type === 'stdio' ? form.command.trim() : null,
-        form.type === 'stdio' ? args : null,
-        form.type === 'streamable-http' ? form.url.trim() : null
+        form.url.trim()
       )
     }
     cancelEdit()
@@ -200,7 +182,7 @@ onMounted(load)
             </div>
           </div>
           <div class="muted small" style="margin-top:6px;">
-            {{ s.type === 'stdio' ? `${s.command} ${(s.args || []).join(' ')}` : s.url }}
+            {{ s.url }}
           </div>
           <div class="row" style="margin-top:8px; gap:6px;">
             <button class="btn btn-sm" @click="openEdit(s)">编辑</button>
@@ -221,29 +203,8 @@ onMounted(load)
           <label>名称</label>
           <input v-model="form.name" placeholder="e.g. filesystem, github" />
 
-          <label>传输类型</label>
-          <div class="row" style="gap:8px;">
-            <label class="radio-label" :class="{ active: form.type === 'stdio' }">
-              <input type="radio" v-model="form.type" value="stdio" />
-              stdio（本地进程）
-            </label>
-            <label class="radio-label" :class="{ active: form.type === 'streamable-http' }">
-              <input type="radio" v-model="form.type" value="streamable-http" />
-              Streamable HTTP
-            </label>
-          </div>
-
-          <template v-if="form.type === 'stdio'">
-            <label>Command</label>
-            <input v-model="form.command" placeholder="e.g. npx" />
-            <label>Args（空格分隔）</label>
-            <input v-model="form.argsStr" placeholder="e.g. -y @modelcontextprotocol/server-filesystem /tmp" />
-          </template>
-
-          <template v-if="form.type === 'streamable-http'">
-            <label>Streamable HTTP URL</label>
-            <input v-model="form.url" placeholder="http://remote-server:8080/mcp" />
-          </template>
+          <label>Streamable HTTP URL</label>
+          <input v-model="form.url" placeholder="http://remote-server:8080/mcp" />
 
           <div v-if="error" class="alert">{{ error }}</div>
           <button class="btn btn-primary" :disabled="saving" @click="submit">
@@ -270,7 +231,7 @@ onMounted(load)
 
     <!-- Status bar -->
     <div class="status-bar muted small">
-      <span>配置保存在 <code>.uct8086/mcp-servers.json</code></span>
+      <span>配置保存在 <code>.uct8086/mcp-servers/{userId}.json</code></span>
       <span>·</span>
       <span>配置变更点击<strong>「重新连接」</strong>即刻生效</span>
       <span>·</span>

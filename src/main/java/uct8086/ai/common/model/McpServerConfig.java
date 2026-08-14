@@ -5,16 +5,11 @@ import java.util.List;
 /**
  * MCP (Model Context Protocol) server configuration.
  *
- * <p>Supports two transport types:
- * <ul>
- *   <li><b>stdio</b> — local process (command + args)</li>
- *   <li><b>sse</b> — remote HTTP SSE endpoint (url)</li>
- * </ul>
+ * <p>Supports the Streamable HTTP transport (remote HTTP endpoint via url).
+ * The deprecated HTTP+SSE ("sse") type is also accepted for backward compatibility
+ * and routed through the Streamable HTTP transport.
  *
- * <p>Configs are persisted to {@code .uct8086/mcp-servers.json} and
- * become effective on next application restart (Spring AI 2.0
- * auto-creates {@link org.springframework.ai.tool.ToolCallback} beans
- * from {@code application.yml} at startup).
+ * <p>Configs are persisted per user under {@code .uct8086/mcp-servers/{userId}.json}.
  */
 public record McpServerConfig(
         String id,
@@ -29,7 +24,7 @@ public record McpServerConfig(
     /** Compact constructor with defaults. */
     public McpServerConfig {
         if (type == null || type.isBlank()) {
-            type = "stdio";
+            type = "streamable-http";
         }
     }
 

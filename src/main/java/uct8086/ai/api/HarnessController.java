@@ -1,6 +1,7 @@
 package uct8086.ai.api;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import uct8086.ai.auth.service.CurrentUser;
 import uct8086.ai.common.enums.PermissionMode;
 import uct8086.ai.common.model.AgentMessage;
 import uct8086.ai.common.model.ToolDescriptor;
@@ -89,12 +90,14 @@ public class HarnessController {
      */
     @PostMapping("/chat")
     public AgentLoopResult chat(@RequestBody ChatRequest request) {
-        log.info("Chat request received - prompt: '{}', sessionId: {}",
+        Long userId = CurrentUser.requireId();
+        log.info("Chat request received - user: {}, prompt: '{}', sessionId: {}",
+                userId,
                 request.prompt() != null && request.prompt().length() > 100
                         ? request.prompt().substring(0, 100) + "..."
                         : request.prompt(),
                 request.sessionId());
-        return agentEngine.execute(request.prompt(), request.sessionId());
+        return agentEngine.execute(userId, request.prompt(), request.sessionId());
     }
 
     /**
@@ -102,24 +105,25 @@ public class HarnessController {
      */
     @PostMapping("/chat-with-context")
     public AgentLoopResult chatWithContext(@RequestBody ChatWithContextRequest request) {
-        return agentEngine.execute(request.prompt(), request.sessionId(), request.additionalContext());
+        Long userId = CurrentUser.requireId();
+        return agentEngine.execute(userId, request.prompt(), request.sessionId(), request.additionalContext());
     }
 
     // ========== Sessions ==========
 
     @GetMapping("/sessions")
     public List<uct8086.ai.common.model.SessionInfo> listSessions() {
-        return sessionManager.listSessions();
+        return sessionManager.listSessions(CurrentUser.requireId());
     }
 
     @PostMapping("/sessions")
     public SessionManager.ConversationSession createSession(@RequestParam(required = false) String name) {
-        return sessionManager.createSession(name);
+        return sessionManager.createSession(CurrentUser.requireId(), name);
     }
 
     @DeleteMapping("/sessions/{id}")
     public Map<String, Boolean> deleteSession(@PathVariable String id) {
-        return Map.of("deleted", sessionManager.deleteSession(id));
+        return Map.of("deleted", sessionManager.deleteSession(CurrentUser.requireId(), id));
     }
 
     /**
@@ -127,7 +131,7 @@ public class HarnessController {
      */
     @GetMapping("/sessions/{id}/messages")
     public List<AgentMessage> getSessionMessages(@PathVariable String id) {
-        return sessionManager.getMessages(id);
+        return sessionManager.getMessages(CurrentUser.requireId(), id);
     }
 
     // ========== Tools ==========
@@ -154,65 +158,65 @@ public class HarnessController {
 
     @GetMapping("/cost/total")
     public uct8086.ai.common.model.TokenUsage getTotalCost() {
-        return costTracker.getTotalUsage();
+        return costTracker.getTotalUsage(CurrentUser.requireId());
     }
 
     @GetMapping("/cost/session/{sessionId}")
     public uct8086.ai.common.model.TokenUsage getSessionCost(@PathVariable String sessionId) {
-        return costTracker.getSessionUsage(sessionId);
+        return costTracker.getSessionUsage(CurrentUser.requireId(), sessionId);
     }
 
     // ========== Skills ==========
 
     @GetMapping("/skills")
     public List<Skill> listSkills() {
-        return skillRegistry.listSkills();
+        return skillRegistry.listSkills(CurrentUser.requireId());
     }
 
     @PostMapping("/skills")
     public Skill addSkill(@RequestBody AddSkillRequest request) {
         Skill skill = new Skill(request.name(), request.description(), request.content(), null);
-        skillRegistry.register(skill);
+        skillRegistry.register(CurrentUser.requireId(), skill);
         return skill;
     }
 
     @GetMapping("/skills/{name}")
     public Skill getSkill(@PathVariable String name) {
-        return skillRegistry.getSkill(name).orElse(null);
+        return skillRegistry.getSkill(CurrentUser.requireId(), name).orElse(null);
     }
 
     // ========== Memory ==========
 
     @GetMapping("/memory")
     public List<MemoryEntry> listMemory() {
-        return memoryStore.getAll();
+        return memoryStore.getAll(CurrentUser.requireId());
     }
 
     @PostMapping("/memory")
     public MemoryEntry addMemory(@RequestBody AddMemoryRequest request) {
-        return memoryStore.save(new MemoryEntry(request.category(), request.content()));
+        return memoryStore.save(CurrentUser.requireId(), new MemoryEntry(request.category(), request.content()));
     }
 
     @GetMapping("/memory/search")
     public List<MemoryEntry> searchMemory(@RequestParam String keyword) {
-        return memoryStore.search(keyword);
+        return memoryStore.search(CurrentUser.requireId(), keyword);
     }
 
     // ========== Tasks ==========
 
     @GetMapping("/tasks")
     public List<BackgroundTask> listTasks() {
-        return taskManager.listTasks();
+        return taskManager.listTasks(CurrentUser.requireId());
     }
 
     @GetMapping("/tasks/{id}")
     public BackgroundTask getTask(@PathVariable String id) {
-        return taskManager.getTask(id).orElse(null);
+        return taskManager.getTask(CurrentUser.requireId(), id).orElse(null);
     }
 
     @DeleteMapping("/tasks/{id}")
     public Map<String, Boolean> cancelTask(@PathVariable String id) {
-        return Map.of("cancelled", taskManager.cancelTask(id));
+        return Map.of("cancelled", taskManager.cancelTask(CurrentUser.requireId(), id));
     }
 
     // ========== Knowledge (Vector Store / pgvector) ==========
@@ -256,7 +260,7 @@ public class HarnessController {
      */
     @GetMapping("/mcp/servers")
     public List<Map<String, Object>> listMcpServers() {
-        return mcpClientService.listServers();
+        return mcpClientService.listServers(CurrentUser.requireId());
     }
 
     /**
@@ -264,7 +268,7 @@ public class HarnessController {
      */
     @GetMapping("/mcp/tools")
     public List<Map<String, String>> listMcpTools() {
-        return mcpClientService.listTools();
+        return mcpClientService.listTools(CurrentUser.requireId());
     }
 
     /**
@@ -272,17 +276,18 @@ public class HarnessController {
      */
     @PostMapping("/mcp/servers")
     public McpServerConfig addMcpServer(@RequestBody AddMcpServerRequest request) {
+        Long userId = CurrentUser.requireId();
         String id = UUID.randomUUID().toString().substring(0, 8);
         McpServerConfig config = new McpServerConfig(
                 id,
                 request.name(),
-                request.type() != null ? request.type() : "stdio",
+                request.type() != null ? request.type() : "streamable-http",
                 request.command(),
                 request.args() != null ? request.args() : List.of(),
                 request.url(),
                 true
         );
-        return mcpConfigManager.save(config);
+        return mcpConfigManager.save(userId, config);
     }
 
     /**
@@ -291,7 +296,8 @@ public class HarnessController {
     @PutMapping("/mcp/servers/{id}")
     public McpServerConfig updateMcpServer(@PathVariable String id,
                                             @RequestBody AddMcpServerRequest request) {
-        return mcpConfigManager.get(id)
+        Long userId = CurrentUser.requireId();
+        return mcpConfigManager.get(userId, id)
                 .map(existing -> {
                     McpServerConfig updated = new McpServerConfig(
                             id,
@@ -302,7 +308,7 @@ public class HarnessController {
                             request.url() != null ? request.url() : existing.url(),
                             existing.enabled()
                     );
-                    return mcpConfigManager.save(updated);
+                    return mcpConfigManager.save(userId, updated);
                 })
                 .orElseThrow(() -> new IllegalArgumentException("MCP server not found: " + id));
     }
@@ -312,8 +318,9 @@ public class HarnessController {
      */
     @PutMapping("/mcp/servers/{id}/toggle")
     public McpServerConfig toggleMcpServer(@PathVariable String id) {
-        return mcpConfigManager.get(id)
-                .map(c -> mcpConfigManager.save(c.withEnabled(!c.enabled())))
+        Long userId = CurrentUser.requireId();
+        return mcpConfigManager.get(userId, id)
+                .map(c -> mcpConfigManager.save(userId, c.withEnabled(!c.enabled())))
                 .orElseThrow(() -> new IllegalArgumentException("MCP server not found: " + id));
     }
 
@@ -322,18 +329,19 @@ public class HarnessController {
      */
     @DeleteMapping("/mcp/servers/{id}")
     public Map<String, Boolean> deleteMcpServer(@PathVariable String id) {
-        return Map.of("deleted", mcpConfigManager.delete(id));
+        return Map.of("deleted", mcpConfigManager.delete(CurrentUser.requireId(), id));
     }
 
     /**
-     * Reconnect to all enabled MCP servers.
+     * Reconnect to all enabled MCP servers for the current user.
      * Call after adding/removing/updating configs to apply changes.
      */
     @PostMapping("/mcp/refresh")
     public Map<String, Object> refreshMcpConnections() {
-        mcpConnectionManager.refresh();
-        return Map.of("active", mcpConnectionManager.getActiveCount(),
-                "errors", mcpConnectionManager.getConnectionErrors());
+        Long userId = CurrentUser.requireId();
+        mcpConnectionManager.refresh(userId);
+        return Map.of("active", mcpConnectionManager.getActiveCount(userId),
+                "errors", mcpConnectionManager.getConnectionErrors(userId));
     }
 
     // ========== Request DTOs ==========

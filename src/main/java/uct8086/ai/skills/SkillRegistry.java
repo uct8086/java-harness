@@ -16,55 +16,88 @@ public class SkillRegistry {
     private static final Logger log = LoggerFactory.getLogger(SkillRegistry.class);
 
     private final SkillLoader skillLoader;
-    private final Path skillsDir;
-    private final Map<String, Skill> skills = new ConcurrentHashMap<>();
+    private final Path skillsRoot;
+
+    // System-wide skills loaded from the project directory at startup (shared).
+    private final Map<String, Skill> systemSkills = new ConcurrentHashMap<>();
+    // Per-user skills (user id -> skill name -> skill).
+    private final Map<Long, Map<String, Skill>> userSkills = new ConcurrentHashMap<>();
 
     public SkillRegistry(SkillLoader skillLoader, HarnessProperties properties) {
         this.skillLoader = skillLoader;
-        this.skillsDir = Path.of(properties.getWorkingDirectory(), ".uct8086", "skills");
-    }
-
-    public void loadFromDirectory(Path directory) {
-        Map<String, Skill> loaded = skillLoader.loadFromDirectory(directory);
-        skills.putAll(loaded);
-        log.info("Loaded {} skills from {}", loaded.size(), directory);
+        this.skillsRoot = Path.of(properties.getWorkingDirectory(), ".uct8086", "skills");
     }
 
     /**
-     * Register a skill — in-memory AND persisted to the .uct8086/skills/ directory.
+     * Load system-wide skills from a directory (startup, shared across users).
      */
-    public void register(Skill skill) {
-        skills.put(skill.name(), skill);
-        persistSkill(skill);
-        log.info("Registered skill: {} -> {}", skill.name(), skillsDir.resolve(skill.name() + ".md"));
+    public void loadFromDirectory(Path directory) {
+        Map<String, Skill> loaded = skillLoader.loadFromDirectory(directory);
+        systemSkills.putAll(loaded);
+        log.info("Loaded {} system skills from {}", loaded.size(), directory);
     }
 
-    public Optional<Skill> getSkill(String name) {
-        return Optional.ofNullable(skills.get(name));
+    /**
+     * Register a user-owned skill — in-memory AND persisted under the user's directory.
+     */
+    public void register(Long userId, Skill skill) {
+        userSkills.computeIfAbsent(userId, k -> new ConcurrentHashMap<>()).put(skill.name(), skill);
+        persistSkill(userId, skill);
+        log.info("Registered skill for user {}: {} -> {}", userId, skill.name(), userSkillFile(userId, skill.name()));
     }
 
-    public Optional<String> getSkillContent(String name) {
-        return getSkill(name).map(Skill::content);
+    public Optional<Skill> getSkill(Long userId, String name) {
+        Map<String, Skill> map = userSkills.get(userId);
+        return map != null ? Optional.ofNullable(map.get(name)) : Optional.empty();
     }
 
-    public List<Skill> listSkills() {
-        return skills.values().stream().sorted(Comparator.comparing(Skill::name)).toList();
+    public Optional<String> getSkillContent(Long userId, String name) {
+        return getSkill(userId, name).map(Skill::content);
+    }
+
+    /**
+     * List user-owned skills for the given user.
+     */
+    public List<Skill> listSkills(Long userId) {
+        Map<String, Skill> map = userSkills.get(userId);
+        if (map == null) {
+            return List.of();
+        }
+        return map.values().stream().sorted(Comparator.comparing(Skill::name)).toList();
+    }
+
+    /**
+     * List system-wide skills (shared).
+     */
+    public List<Skill> listSystemSkills() {
+        return systemSkills.values().stream().sorted(Comparator.comparing(Skill::name)).toList();
+    }
+
+    /**
+     * Number of system skills.
+     */
+    public int size() {
+        return systemSkills.size();
+    }
+
+    public boolean hasSkill(Long userId, String name) {
+        Map<String, Skill> map = userSkills.get(userId);
+        return map != null && map.containsKey(name);
     }
 
     public List<String> getAllContents() {
-        return skills.values().stream().map(Skill::content).toList();
+        return systemSkills.values().stream().map(Skill::content).toList();
     }
 
-    public boolean hasSkill(String name) { return skills.containsKey(name); }
-    public int size() { return skills.size(); }
+    private Path userSkillFile(Long userId, String name) {
+        return skillsRoot.resolve(String.valueOf(userId)).resolve(name + ".md");
+    }
 
-    private void persistSkill(Skill skill) {
-        // Serialize writes to avoid concurrent interleaving when multiple skills are
-        // registered concurrently.
+    private void persistSkill(Long userId, Skill skill) {
         synchronized (this) {
             try {
-                Files.createDirectories(skillsDir);
-                // YAML frontmatter format matching SkillLoader.parse()
+                Path dir = skillsRoot.resolve(String.valueOf(userId));
+                Files.createDirectories(dir);
                 StringBuilder sb = new StringBuilder();
                 sb.append("---\n");
                 sb.append("name: ").append(skill.name()).append("\n");
@@ -77,9 +110,9 @@ public class SkillRegistry {
                 }
                 sb.append("---\n\n");
                 sb.append(skill.content());
-                Files.writeString(skillsDir.resolve(skill.name() + ".md"), sb.toString());
+                Files.writeString(dir.resolve(skill.name() + ".md"), sb.toString());
             } catch (IOException e) {
-                log.warn("Failed to persist skill {}: {}", skill.name(), e.getMessage());
+                log.warn("Failed to persist skill {} for user {}: {}", skill.name(), userId, e.getMessage());
             }
         }
     }

@@ -16,20 +16,20 @@ import uct8086.ai.common.model.McpServerConfig;
 import uct8086.ai.core.config.HarnessProperties;
 
 /**
- * Manages MCP server configurations with JSON file persistence.
+ * Manages MCP server configurations with JSON file persistence, scoped per user.
  *
- * <p>Configs are stored in {@code .uct8086/mcp-servers.json} under
- * the working directory. Spring AI 2.0 auto-wires MCP ToolCallbacks
- * from {@code application.yml} at startup; this manager stores the
- * user-facing configuration that maps to those entries.
+ * <p>Each user's configs are stored in their own file
+ * {@code .uct8086/mcp-servers/{userId}.json} under the working directory. This
+ * isolates MCP server configurations between users.
  */
 @Component
 public class McpConfigManager {
 
     private static final Logger log = LoggerFactory.getLogger(McpConfigManager.class);
 
-    private final Map<String, McpServerConfig> configs = new ConcurrentHashMap<>();
-    private final Path configFile;
+    // userId -> (configId -> config)
+    private final Map<Long, Map<String, McpServerConfig>> configsByUser = new ConcurrentHashMap<>();
+    private final Path configRoot;
     private final ObjectMapper mapper;
 
     @Autowired
@@ -37,35 +37,40 @@ public class McpConfigManager {
         String workingDir = properties.getWorkingDirectory() != null
                 ? properties.getWorkingDirectory()
                 : System.getProperty("user.dir");
-        this.configFile = Path.of(workingDir, ".uct8086", "mcp-servers.json");
+        this.configRoot = Path.of(workingDir, ".uct8086", "mcp-servers");
         this.mapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
-        load();
     }
 
-    // ---- CRUD ----
+    // ---- CRUD (scoped by userId) ----
 
-    public List<McpServerConfig> listAll() {
+    public List<McpServerConfig> listAll(Long userId) {
+        Map<String, McpServerConfig> configs = configsFor(userId);
         return configs.values().stream()
                 .sorted(Comparator.comparing(McpServerConfig::name))
                 .toList();
     }
 
-    public Optional<McpServerConfig> get(String id) {
-        return Optional.ofNullable(configs.get(id));
+    public Optional<McpServerConfig> get(Long userId, String id) {
+        Map<String, McpServerConfig> configs = configsByUser.get(userId);
+        return configs != null ? Optional.ofNullable(configs.get(id)) : Optional.empty();
     }
 
-    public McpServerConfig save(McpServerConfig config) {
-        configs.put(config.id(), config);
-        persist();
-        log.info("Saved MCP server config: {} ({})", config.name(), config.id());
+    public McpServerConfig save(Long userId, McpServerConfig config) {
+        configsFor(userId).put(config.id(), config);
+        persist(userId);
+        log.info("Saved MCP server config for user {}: {} ({})", userId, config.name(), config.id());
         return config;
     }
 
-    public boolean delete(String id) {
+    public boolean delete(Long userId, String id) {
+        Map<String, McpServerConfig> configs = configsByUser.get(userId);
+        if (configs == null) {
+            return false;
+        }
         McpServerConfig removed = configs.remove(id);
         if (removed != null) {
-            persist();
-            log.info("Deleted MCP server config: {} ({})", removed.name(), removed.id());
+            persist(userId);
+            log.info("Deleted MCP server config for user {}: {} ({})", userId, removed.name(), removed.id());
             return true;
         }
         return false;
@@ -73,17 +78,32 @@ public class McpConfigManager {
 
     // ---- Persistence ----
 
-    private void persist() {
+    private Map<String, McpServerConfig> configsFor(Long userId) {
+        return configsByUser.computeIfAbsent(userId, k -> {
+            Map<String, McpServerConfig> map = new ConcurrentHashMap<>();
+            load(userId, map);
+            return map;
+        });
+    }
+
+    private Path configFileFor(Long userId) {
+        return configRoot.resolve(userId + ".json");
+    }
+
+    private void persist(Long userId) {
         // Serialize writes and use atomic write (temp file + rename) to avoid
         // concurrent interleaving and partial-read corruption.
         synchronized (this) {
             try {
+                Path configFile = configFileFor(userId);
                 Path parent = configFile.getParent();
                 if (parent != null && !Files.exists(parent)) {
                     Files.createDirectories(parent);
                 }
+                Map<String, McpServerConfig> configs = configsByUser.get(userId);
+                List<McpServerConfig> list = configs != null ? new ArrayList<>(configs.values()) : List.of();
                 Path tempFile = configFile.resolveSibling(configFile.getFileName() + ".tmp");
-                mapper.writeValue(tempFile.toFile(), new ArrayList<>(configs.values()));
+                mapper.writeValue(tempFile.toFile(), list);
                 try {
                     Files.move(tempFile, configFile,
                             java.nio.file.StandardCopyOption.REPLACE_EXISTING,
@@ -93,25 +113,25 @@ public class McpConfigManager {
                             java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 }
             } catch (IOException e) {
-                log.error("Failed to persist MCP configs to {}", configFile, e);
+                log.error("Failed to persist MCP configs for user {}", userId, e);
             }
         }
     }
 
-    private void load() {
+    private void load(Long userId, Map<String, McpServerConfig> target) {
+        Path configFile = configFileFor(userId);
         if (!Files.exists(configFile)) {
-            log.info("MCP config file does not exist, creating: {}", configFile);
-            persist();
+            log.debug("No MCP config file for user {}: {}", userId, configFile);
             return;
         }
         try {
             List<McpServerConfig> list = mapper.readValue(
                     configFile.toFile(),
                     new TypeReference<List<McpServerConfig>>() {});
-            list.forEach(c -> configs.put(c.id(), c));
-            log.info("Loaded {} MCP server configs from {}", configs.size(), configFile);
+            list.forEach(c -> target.put(c.id(), c));
+            log.info("Loaded {} MCP server configs for user {} from {}", target.size(), userId, configFile);
         } catch (IOException e) {
-            log.error("Failed to load MCP configs from {}", configFile, e);
+            log.error("Failed to load MCP configs for user {} from {}", userId, configFile, e);
         }
     }
 }

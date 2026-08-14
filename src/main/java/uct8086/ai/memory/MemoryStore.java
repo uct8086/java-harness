@@ -6,46 +6,49 @@ import java.util.Optional;
 /**
  * Interface for persistent memory storage.
  * Maps to OpenHarness's Memory system.
+ *
+ * <p>All operations are scoped to a {@code userId}, so each user's memory is
+ * fully isolated from others.
  */
 public interface MemoryStore {
 
     /**
-     * Save a memory entry.
+     * Save a memory entry for the given user.
      */
-    MemoryEntry save(MemoryEntry entry);
+    MemoryEntry save(Long userId, MemoryEntry entry);
 
     /**
-     * Get a memory entry by ID.
+     * Get a memory entry by ID for the given user.
      */
-    Optional<MemoryEntry> get(String id);
+    Optional<MemoryEntry> get(Long userId, String id);
 
     /**
-     * Get all memory entries for a category.
+     * Get all memory entries for a category belonging to the given user.
      */
-    List<MemoryEntry> getByCategory(String category);
+    List<MemoryEntry> getByCategory(Long userId, String category);
 
     /**
-     * Get all memory entries.
+     * Get all memory entries for the given user.
      */
-    List<MemoryEntry> getAll();
+    List<MemoryEntry> getAll(Long userId);
 
     /**
-     * Update a memory entry.
+     * Update a memory entry for the given user.
      */
-    MemoryEntry update(MemoryEntry entry);
+    MemoryEntry update(Long userId, MemoryEntry entry);
 
     /**
-     * Delete a memory entry by ID.
+     * Delete a memory entry by ID for the given user.
      */
-    boolean delete(String id);
+    boolean delete(Long userId, String id);
 
     /**
-     * Search memory entries by keyword.
+     * Search memory entries by keyword for the given user.
      */
-    List<MemoryEntry> search(String keyword);
+    List<MemoryEntry> search(Long userId, String keyword);
 
     /**
-     * Clear all memory entries.
+     * Clear all memory entries for the given user.
      */
-    void clear();
+    void clear(Long userId);
 }

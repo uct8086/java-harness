@@ -96,12 +96,12 @@ public class AgentEngine {
         }
     }
 
-    public AgentLoopResult execute(String userPrompt, String sessionId) {
-        return executeInternal(userPrompt, sessionId, null);
+    public AgentLoopResult execute(Long userId, String userPrompt, String sessionId) {
+        return executeInternal(userId, userPrompt, sessionId, null);
     }
 
-    public AgentLoopResult execute(String userPrompt, String sessionId, String additionalContext) {
-        return executeInternal(userPrompt, sessionId, additionalContext);
+    public AgentLoopResult execute(Long userId, String userPrompt, String sessionId, String additionalContext) {
+        return executeInternal(userId, userPrompt, sessionId, additionalContext);
     }
 
     /**
@@ -113,10 +113,10 @@ public class AgentEngine {
      * {@code ToolCallingChatOptions} at runtime.
      */
     @SuppressWarnings("unchecked")
-    private AgentLoopResult executeInternal(String userPrompt, String sessionId, String additionalContext) {
+    private AgentLoopResult executeInternal(Long userId, String userPrompt, String sessionId, String additionalContext) {
         SessionManager.ConversationSession session = (sessionId != null)
-                ? sessionManager.getSession(sessionId).orElseGet(() -> sessionManager.createSession())
-                : sessionManager.createSession();
+                ? sessionManager.getSession(userId, sessionId).orElseGet(() -> sessionManager.createSession(userId))
+                : sessionManager.createSession(userId);
 
         // Read the current default permission mode (per-request) instead of mutating
         // a global singleton field, which caused concurrent requests to overwrite
@@ -132,9 +132,9 @@ public class AgentEngine {
                         ? properties.getSystemPrompt()
                         : promptAssembler.buildSystemPrompt());
         systemPrompt = enrichWithRag(systemPrompt, userPrompt);
-        sessionManager.addMessage(session.id(), AgentMessage.user(userPrompt));
+        sessionManager.addMessage(userId, session.id(), AgentMessage.user(userPrompt));
 
-        ToolCallback[] callbacks = buildToolCallbacks(context);
+        ToolCallback[] callbacks = buildToolCallbacks(userId, context);
         int maxTurns = properties.getMaxTurns();
         log.info("Starting agent loop for session {} (tools: {}, maxTurns: {})",
                 session.id(), callbacks.length, maxTurns);
@@ -191,8 +191,8 @@ public class AgentEngine {
                     turns, toolCallRecords.size(), elapsed,
                     usage.inputTokens(), usage.outputTokens());
 
-            sessionManager.addMessage(session.id(), AgentMessage.assistant(response));
-            costTracker.record(session.id(), usage);
+            sessionManager.addMessage(userId, session.id(), AgentMessage.assistant(response));
+            costTracker.record(userId, session.id(), usage);
             return AgentLoopResult.success(response, turns, toolCallRecords, usage);
 
         } catch (Exception e) {
@@ -201,7 +201,7 @@ public class AgentEngine {
         }
     }
 
-    private ToolCallback[] buildToolCallbacks(ToolExecutionContext context) {
+    private ToolCallback[] buildToolCallbacks(Long userId, ToolExecutionContext context) {
         List<ToolCallback> callbacks = new ArrayList<>();
 
         // 1. Custom HarnessTools (via ToolRegistry)
@@ -209,8 +209,8 @@ public class AgentEngine {
                 .map(tool -> (ToolCallback) new HarnessToolCallbackAdapter(tool, toolExecutionService, context))
                 .forEach(callbacks::add);
 
-        // 2. MCP tools — dynamically connected from .uct8086/mcp-servers.json
-        List<ToolCallback> mcpCallbacks = mcpConnectionManager.getToolCallbacks();
+        // 2. MCP tools — dynamically connected from the user's own MCP servers
+        List<ToolCallback> mcpCallbacks = mcpConnectionManager.getToolCallbacks(userId);
         log.info("Agent tools: {} custom + {} MCP", callbacks.size(), mcpCallbacks.size());
         callbacks.addAll(mcpCallbacks);
 

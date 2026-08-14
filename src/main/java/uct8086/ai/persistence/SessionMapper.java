@@ -2,6 +2,7 @@ package uct8086.ai.persistence;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
@@ -12,6 +13,6 @@ import java.util.List;
 @Mapper
 public interface SessionMapper extends BaseMapper<SessionEntity> {
 
-    @Select("SELECT * FROM harness_session ORDER BY updated_at DESC")
-    List<SessionEntity> findAllOrderByUpdatedAtDesc();
+    @Select("SELECT * FROM harness_session WHERE user_id = #{userId} ORDER BY updated_at DESC")
+    List<SessionEntity> findByUserIdOrderByUpdatedAtDesc(@Param("userId") Long userId);
 }

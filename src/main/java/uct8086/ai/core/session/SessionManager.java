@@ -24,18 +24,14 @@ import org.springframework.stereotype.Component;
 /**
  * Manages conversation sessions, backed by MySQL for persistence and Redis for caching.
  *
- * <p>Features:
- * <ul>
- *   <li>Create new sessions (persisted to MySQL)</li>
- *   <li>Resume existing sessions by ID (loaded from MySQL)</li>
- *   <li>List session history (cached in Redis)</li>
- *   <li>Track messages per session (persisted to MySQL, cached in Redis)</li>
- * </ul>
+ * <p>All operations are scoped to a {@code userId}, so each user only sees and
+ * manipulates their own sessions and messages. Redis cache keys are namespaced by
+ * user id to prevent cross-user cache leakage.
  *
  * <p>Redis cache keys:
  * <ul>
- *   <li>{@code harness:session:list} -&gt; list of {@link SessionInfo} (TTL 10m)</li>
- *   <li>{@code harness:session:messages:{id}} -&gt; list of {@link AgentMessage} (TTL 10m)</li>
+ *   <li>{@code harness:session:list:{userId}} -&gt; list of {@link SessionInfo} (TTL 10m)</li>
+ *   <li>{@code harness:session:messages:{userId}:{id}} -&gt; list of {@link AgentMessage} (TTL 10m)</li>
  * </ul>
  */
 @Component
@@ -43,7 +39,7 @@ public class SessionManager {
 
     private static final Logger log = LoggerFactory.getLogger(SessionManager.class);
 
-    private static final String CACHE_SESSION_LIST = "harness:session:list";
+    private static final String CACHE_SESSION_LIST_PREFIX = "harness:session:list:";
     private static final String CACHE_SESSION_MESSAGES_PREFIX = "harness:session:messages:";
     private static final Duration CACHE_TTL = Duration.ofMinutes(10);
 
@@ -66,70 +62,73 @@ public class SessionManager {
     }
 
     /**
-     * Create a new session.
+     * Create a new session for the given user.
      */
-    public ConversationSession createSession(String name) {
+    public ConversationSession createSession(Long userId, String name) {
         String id = UUID.randomUUID().toString();
         LocalDateTime now = LocalDateTime.now();
         SessionEntity entity = new SessionEntity();
         entity.setId(id);
+        entity.setUserId(userId);
         entity.setName(name != null ? name : "session");
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
         entity.setMessageCount(0);
         sessionMapper.insert(entity);
-        invalidateListCache();
-        log.info("Created session: {} ({})", name, id);
+        invalidateListCache(userId);
+        log.info("Created session: {} ({}) for user {}", name, id, userId);
         return toConversationSession(entity);
     }
 
     /**
-     * Create a new unnamed session.
-     * Uses a UUID-derived suffix to avoid the concurrency race and full-table
-     * {@code count()} scan of the previous "session-<count>" naming scheme.
+     * Create a new unnamed session for the given user.
      */
-    public ConversationSession createSession() {
-        return createSession("session-" + UUID.randomUUID().toString().substring(0, 8));
+    public ConversationSession createSession(Long userId) {
+        return createSession(userId, "session-" + UUID.randomUUID().toString().substring(0, 8));
     }
 
     /**
-     * Get a session by ID.
+     * Get a session by ID, verifying it belongs to the given user.
      */
-    public Optional<ConversationSession> getSession(String sessionId) {
-        return Optional.ofNullable(sessionMapper.selectById(sessionId)).map(this::toConversationSession);
-    }
-
-    /**
-     * Add a message to a session (persisted to MySQL, cache invalidated).
-     */
-    public void addMessage(String sessionId, AgentMessage message) {
+    public Optional<ConversationSession> getSession(Long userId, String sessionId) {
         SessionEntity entity = sessionMapper.selectById(sessionId);
-        if (entity == null) {
-            log.warn("Session not found for addMessage: {}", sessionId);
+        if (entity == null || !userId.equals(entity.getUserId())) {
+            return Optional.empty();
+        }
+        return Optional.of(toConversationSession(entity));
+    }
+
+    /**
+     * Add a message to a session owned by the given user.
+     */
+    public void addMessage(Long userId, String sessionId, AgentMessage message) {
+        SessionEntity entity = sessionMapper.selectById(sessionId);
+        if (entity == null || !userId.equals(entity.getUserId())) {
+            log.warn("Session not found or not owned by user {}: {}", userId, sessionId);
             return;
         }
-        messageMapper.insert(toMessageEntity(sessionId, message));
+        messageMapper.insert(toMessageEntity(userId, sessionId, message));
 
         entity.setMessageCount(entity.getMessageCount() + 1);
         entity.setUpdatedAt(LocalDateTime.now());
         sessionMapper.updateById(entity);
 
-        invalidateMessagesCache(sessionId);
-        invalidateListCache();
+        invalidateMessagesCache(userId, sessionId);
+        invalidateListCache(userId);
         log.debug("Added {} message to session {} (total {})", message.role(), sessionId, entity.getMessageCount());
     }
 
     /**
-     * Get messages from a session (Redis-cached, falls back to MySQL).
+     * Get messages from a session owned by the given user (Redis-cached).
      */
-    public List<AgentMessage> getMessages(String sessionId) {
-        String cacheKey = CACHE_SESSION_MESSAGES_PREFIX + sessionId;
+    public List<AgentMessage> getMessages(Long userId, String sessionId) {
+        String cacheKey = messagesCacheKey(userId, sessionId);
         Optional<List<AgentMessage>> cached = readCache(cacheKey, MESSAGE_LIST_TYPE);
         if (cached.isPresent()) {
             log.debug("Cache hit for messages of session {}", sessionId);
             return cached.get();
         }
-        List<MessageEntity> entities = messageMapper.findBySessionIdOrderByCreatedAtAsc(sessionId);
+        List<MessageEntity> entities = messageMapper.findByUserIdAndSessionIdOrderByCreatedAtAsc(userId, sessionId);
         List<AgentMessage> messages = entities.stream().map(this::toAgentMessage).toList();
         cacheJson(cacheKey, messages);
         log.debug("Loaded {} messages for session {} from DB (cached)", messages.size(), sessionId);
@@ -137,58 +136,71 @@ public class SessionManager {
     }
 
     /**
-     * List all session infos (Redis-cached, falls back to MySQL).
+     * List session infos for the given user (Redis-cached).
      */
-    public List<SessionInfo> listSessions() {
-        Optional<List<SessionInfo>> cached = readCache(CACHE_SESSION_LIST, SESSION_INFO_LIST_TYPE);
+    public List<SessionInfo> listSessions(Long userId) {
+        String cacheKey = listCacheKey(userId);
+        Optional<List<SessionInfo>> cached = readCache(cacheKey, SESSION_INFO_LIST_TYPE);
         if (cached.isPresent()) {
-            log.debug("Cache hit for session list");
+            log.debug("Cache hit for session list of user {}", userId);
             return cached.get();
         }
-        List<SessionInfo> sessions = sessionMapper.findAllOrderByUpdatedAtDesc().stream()
+        List<SessionInfo> sessions = sessionMapper.findByUserIdOrderByUpdatedAtDesc(userId).stream()
                 .map(this::toSessionInfo)
                 .toList();
-        cacheJson(CACHE_SESSION_LIST, sessions);
-        log.debug("Loaded {} sessions from DB (cached)", sessions.size());
+        cacheJson(cacheKey, sessions);
+        log.debug("Loaded {} sessions for user {} from DB (cached)", sessions.size(), userId);
         return sessions;
     }
 
     /**
-     * Delete a session and its messages.
+     * Delete a session and its messages, verifying ownership.
      */
-    public boolean deleteSession(String sessionId) {
-        if (sessionMapper.selectById(sessionId) == null) {
+    public boolean deleteSession(Long userId, String sessionId) {
+        SessionEntity entity = sessionMapper.selectById(sessionId);
+        if (entity == null || !userId.equals(entity.getUserId())) {
             return false;
         }
         messageMapper.delete(Wrappers.<MessageEntity>lambdaQuery()
+                .eq(MessageEntity::getUserId, userId)
                 .eq(MessageEntity::getSessionId, sessionId));
         sessionMapper.deleteById(sessionId);
-        invalidateMessagesCache(sessionId);
-        invalidateListCache();
-        log.info("Deleted session: {}", sessionId);
+        invalidateMessagesCache(userId, sessionId);
+        invalidateListCache(userId);
+        log.info("Deleted session: {} for user {}", sessionId, userId);
         return true;
     }
 
     /**
-     * Clear all sessions and messages.
+     * Clear all sessions and messages belonging to the given user.
      */
-    public void clearAll() {
-        List<String> ids = sessionMapper.selectList(null).stream().map(SessionEntity::getId).toList();
-        sessionMapper.delete(null);
-        messageMapper.delete(null);
-        invalidateListCache();
-        ids.forEach(this::invalidateMessagesCache);
-        log.info("All sessions cleared");
+    public void clearAll(Long userId) {
+        List<String> ids = sessionMapper.selectList(
+                        Wrappers.<SessionEntity>lambdaQuery().eq(SessionEntity::getUserId, userId))
+                .stream().map(SessionEntity::getId).toList();
+        sessionMapper.delete(Wrappers.<SessionEntity>lambdaQuery().eq(SessionEntity::getUserId, userId));
+        messageMapper.delete(Wrappers.<MessageEntity>lambdaQuery().eq(MessageEntity::getUserId, userId));
+        invalidateListCache(userId);
+        ids.forEach(id -> invalidateMessagesCache(userId, id));
+        log.info("All sessions cleared for user {}", userId);
     }
 
     // ========== Cache helpers ==========
 
-    private void invalidateListCache() {
-        redisTemplate.delete(CACHE_SESSION_LIST);
+    private static String listCacheKey(Long userId) {
+        return CACHE_SESSION_LIST_PREFIX + userId;
     }
 
-    private void invalidateMessagesCache(String sessionId) {
-        redisTemplate.delete(CACHE_SESSION_MESSAGES_PREFIX + sessionId);
+    private static String messagesCacheKey(Long userId, String sessionId) {
+        return CACHE_SESSION_MESSAGES_PREFIX + userId + ":" + sessionId;
+    }
+
+    private void invalidateListCache(Long userId) {
+        redisTemplate.delete(listCacheKey(userId));
+    }
+
+    private void invalidateMessagesCache(Long userId, String sessionId) {
+        redisTemplate.delete(messagesCacheKey(userId, sessionId));
     }
 
     private void cacheJson(String key, Object value) {
@@ -237,8 +249,9 @@ public class SessionManager {
         return new AgentMessage(role, e.getContent(), toolCalls, e.getToolCallId());
     }
 
-    private MessageEntity toMessageEntity(String sessionId, AgentMessage m) {
+    private MessageEntity toMessageEntity(Long userId, String sessionId, AgentMessage m) {
         MessageEntity e = new MessageEntity();
+        e.setUserId(userId);
         e.setSessionId(sessionId);
         e.setRole(m.role().name());
         e.setContent(m.content());
@@ -259,12 +272,12 @@ public class SessionManager {
     }
 
     /**
-         * Represents a conversation session (metadata only; messages live in MySQL).
-         */
-        public record ConversationSession(String id, String name, Instant createdAt, Instant updatedAt, int messageCount) {
+     * Represents a conversation session (metadata only; messages live in MySQL).
+     */
+    public record ConversationSession(String id, String name, Instant createdAt, Instant updatedAt, int messageCount) {
 
         public SessionInfo toInfo() {
-                return new SessionInfo(id, name, createdAt, updatedAt, messageCount);
-            }
+            return new SessionInfo(id, name, createdAt, updatedAt, messageCount);
         }
+    }
 }

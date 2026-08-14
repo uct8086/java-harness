@@ -2,6 +2,7 @@ package uct8086.ai.core.config;
 
 import uct8086.ai.core.tool.HarnessTool;
 import uct8086.ai.core.tool.ToolRegistry;
+import uct8086.ai.skills.Skill;
 import uct8086.ai.skills.SkillRegistry;
 import java.nio.file.Path;
 import java.util.List;
@@ -51,6 +52,6 @@ public class HarnessCoreAutoConfiguration {
         Path projectSkills = baseDir.resolve(".uct8086").resolve("skills");
         skillRegistry.loadFromDirectory(projectSkills);
 
-        log.info("Skills loaded: {} ({} total)", skillRegistry.size() > 0 ? skillRegistry.listSkills().stream().map(s -> s.name()).toList() : "none", skillRegistry.size());
+        log.info("Skills loaded: {} ({} total)", skillRegistry.size() > 0 ? skillRegistry.listSystemSkills().stream().map(Skill::name).toList() : "none", skillRegistry.size());
     }
 }

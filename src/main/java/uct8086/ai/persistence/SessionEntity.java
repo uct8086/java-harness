@@ -18,6 +18,9 @@ public class SessionEntity {
     @TableId(value = "id", type = IdType.INPUT)
     private String id;
 
+    @TableField("user_id")
+    private Long userId;
+
     @TableField("name")
     private String name;
 

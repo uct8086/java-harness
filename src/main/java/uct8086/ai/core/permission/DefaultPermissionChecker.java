@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -41,11 +42,48 @@ public class DefaultPermissionChecker implements PermissionChecker {
     private final List<String> deniedCommands = new CopyOnWriteArrayList<>();
 
     /**
-     * Commands that are always denied for safety.
+     * Commands that are always denied for safety. Matching is done on a normalized
+     * (whitespace-collapsed, lower-cased) command string so that extra spaces or
+     * case variations do not bypass the check.
      */
     private static final Set<String> DANGEROUS_COMMANDS = Set.of(
-            "rm -rf /", "rm -rf ~", "rm -rf /*", "mkfs", ":(){ :|:& };:",
-            "dd if=/dev/zero of=", "DROP TABLE", "DROP DATABASE"
+            "rm -rf /", "rm -rf ~", "rm -rf /*", "rm -fr /", "rm -r /",
+            "mkfs", "mkfs.ext4", "mkfs.xfs", "mkfs.btrfs",
+            ":(){ :|:& };:", // fork bomb
+            "dd if=/dev/zero", "dd if=/dev/urandom",
+            "drop table", "drop database", "truncate table",
+            "shutdown", "reboot", "halt", "poweroff",
+            "chmod 777 /", "chown -r root /", "format c:", "del /f /s /q c:\\"
+    );
+
+    /**
+     * Dangerous command fragments (substrings) that indicate destructive intent.
+     * Each entry is a normalized lowercase substring checked via {@code contains}.
+     */
+    private static final List<String> DANGEROUS_FRAGMENTS = List.of(
+            "rm -rf", "rm -fr", "rm -r", "rm -f", "del /f", "del /s", "del /q",
+            "format ", "mkfs", "fdisk", "diskpart",
+            ":(){ :|:& };:", "dd if=/dev/zero", "dd if=/dev/random", "dd if=/dev/urandom",
+            "drop table", "drop database", "truncate table", "delete from ",
+            "shutdown", "reboot", "> /dev/sda", "of=/dev/sd", "chmod 777", "chmod -r 777",
+            "chown -r root", "git push --force", "git push -f", "git reset --hard"
+    );
+
+    /**
+     * Regular expressions for structural command-injection patterns that simple
+     * substring matching cannot reliably catch.
+     */
+    private static final List<Pattern> DANGEROUS_PATTERNS = List.of(
+            // path traversal escaping a directory
+            Pattern.compile("(\\.\\./){2,}"),
+            Pattern.compile("(\\.\\.\\\\){2,}"),
+            // command substitution: $(...) or backticks
+            Pattern.compile("\\$\\([^)]*\\)"),
+            Pattern.compile("`[^`]+`"),
+            // command chaining with destructive commands
+            Pattern.compile(";\\s*(rm|mkfs|dd|shutdown|reboot|format)\\b"),
+            Pattern.compile("&&\\s*(rm|mkfs|dd|shutdown|reboot|format)\\b"),
+            Pattern.compile("\\|\\s*(rm|mkfs|dd|shutdown|reboot|format)\\b")
     );
 
     public DefaultPermissionChecker(HarnessProperties properties) {
@@ -94,17 +132,20 @@ public class DefaultPermissionChecker implements PermissionChecker {
         // Check for dangerous commands in arguments
         for (Map.Entry<String, Object> entry : arguments.entrySet()) {
             String value = entry.getValue() != null ? entry.getValue().toString() : "";
-            String lowerValue = value.toLowerCase();
-
-            for (String dangerous : DANGEROUS_COMMANDS) {
-                if (lowerValue.contains(dangerous.toLowerCase())) {
-                    return PermissionResult.denied("Dangerous command detected: " + dangerous);
-                }
+            if (value.isBlank()) {
+                continue;
             }
 
-            for (String denied : deniedCommands) {
-                if (lowerValue.contains(denied.toLowerCase())) {
-                    return PermissionResult.denied("Denied command pattern matched: " + denied);
+            String denied = detectDangerousCommand(value);
+            if (denied != null) {
+                return PermissionResult.denied("Dangerous command detected: " + denied);
+            }
+
+            // User-supplied denied command patterns
+            String normalized = normalize(value);
+            for (String cmd : deniedCommands) {
+                if (normalized.contains(normalize(cmd))) {
+                    return PermissionResult.denied("Denied command pattern matched: " + cmd);
                 }
             }
         }
@@ -131,6 +172,51 @@ public class DefaultPermissionChecker implements PermissionChecker {
 
         // In DEFAULT mode, write operations need user approval
         return PermissionResult.askUser("Tool '" + toolName + "' requires approval");
+    }
+
+    /**
+     * Normalize a command/value string: trim, collapse consecutive whitespace to a
+     * single space, and lower-case. This defeats trivial bypasses via extra spaces
+     * or case variations (e.g. {@code rm  -rf  /} vs {@code rm -rf /}).
+     */
+    private static String normalize(String value) {
+        return value == null ? "" : value.trim().replaceAll("\\s+", " ").toLowerCase();
+    }
+
+    /**
+     * Detect whether a command value is dangerous. Returns a human-readable reason
+     * if dangerous, or {@code null} if safe.
+     *
+     * <p>Checks, in order:
+     * <ol>
+     *   <li>Exact dangerous commands (on the normalized string)</li>
+     *   <li>Dangerous fragments (substring match on normalized string)</li>
+     *   <li>Structural command-injection patterns (regex)</li>
+     * </ol>
+     */
+    private static String detectDangerousCommand(String value) {
+        String normalized = normalize(value);
+
+        // 1. Exact dangerous commands
+        if (DANGEROUS_COMMANDS.contains(normalized)) {
+            return normalized;
+        }
+
+        // 2. Dangerous fragments (substring)
+        for (String fragment : DANGEROUS_FRAGMENTS) {
+            if (normalized.contains(fragment)) {
+                return fragment;
+            }
+        }
+
+        // 3. Structural patterns (path traversal, command substitution/chaining)
+        for (Pattern pattern : DANGEROUS_PATTERNS) {
+            if (pattern.matcher(value).find()) {
+                return "pattern: " + pattern.pattern();
+            }
+        }
+
+        return null;
     }
 
     private boolean matchesPath(String path, String pattern) {

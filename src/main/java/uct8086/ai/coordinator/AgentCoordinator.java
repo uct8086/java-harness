@@ -40,11 +40,11 @@ public class AgentCoordinator {
      * @param task         the task to execute
      * @return the created subagent
      */
-    public Subagent spawnSubagent(String name, String systemPrompt, String task) {
+    public Subagent spawnSubagent(Long userId, String name, String systemPrompt, String task) {
         Subagent subagent = new Subagent(name, AgentRole.SUBAGENT, systemPrompt);
 
         // Create a background task for the subagent
-        taskManager.createTask(name, "Subagent task: " + task, () -> {
+        taskManager.createTask(userId, name, "Subagent task: " + task, () -> {
             // In a real implementation, this would call the AgentEngine
             // with the subagent's system prompt and task
             log.info("Subagent '{}' executing task: {}", name, task);

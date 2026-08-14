@@ -18,6 +18,9 @@ public class MessageEntity {
     @TableId(value = "id", type = IdType.AUTO)
     private Long id;
 
+    @TableField("user_id")
+    private Long userId;
+
     @TableField("session_id")
     private String sessionId;
 

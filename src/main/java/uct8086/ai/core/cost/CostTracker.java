@@ -17,10 +17,12 @@ import java.util.function.BiConsumer;
 
 /**
  * Tracks token usage and cost across sessions with budget alerting.
- * <p>
- * Features:
+ *
+ * <p>Usage is scoped per user: each user has their own per-session and total
+ * accumulation, isolated from other users.
+ *
  * <ul>
- *   <li>Per-session and total token/cost accumulation</li>
+ *   <li>Per-user, per-session and total token/cost accumulation</li>
  *   <li>Session-level cost warn/limit checks</li>
  *   <li>Total accumulated cost warn threshold</li>
  *   <li>Log-based alerting (WARN/ERROR)</li>
@@ -34,11 +36,14 @@ public class CostTracker {
 
     private final HarnessProperties properties;
     private final ApplicationEventPublisher eventPublisher;
-    private final Map<String, TokenUsage> sessionUsage = new ConcurrentHashMap<>();
-    // Atomic accumulators for thread-safe total usage aggregation (avoid lost updates).
-    private final LongAdder totalInputTokens = new LongAdder();
-    private final LongAdder totalOutputTokens = new LongAdder();
-    private final DoubleAdder totalCostAdder = new DoubleAdder();
+
+    // userId -> sessionId -> usage
+    private final Map<Long, Map<String, TokenUsage>> sessionUsage = new ConcurrentHashMap<>();
+    // userId -> total accumulators (atomic)
+    private final Map<Long, LongAdder> totalInputByUser = new ConcurrentHashMap<>();
+    private final Map<Long, LongAdder> totalOutputByUser = new ConcurrentHashMap<>();
+    private final Map<Long, DoubleAdder> totalCostByUser = new ConcurrentHashMap<>();
+
     private final List<BiConsumer<String, CostAlert>> alertListeners = new CopyOnWriteArrayList<>();
 
     public CostTracker(HarnessProperties properties, ApplicationEventPublisher eventPublisher) {
@@ -47,65 +52,64 @@ public class CostTracker {
     }
 
     /**
-     * Record token usage for a session and check budget thresholds.
+     * Record token usage for a user + session and check budget thresholds.
      */
-    public void record(String sessionId, TokenUsage usage) {
-        // Ensure cost is calculated if not already
+    public void record(Long userId, String sessionId, TokenUsage usage) {
         TokenUsage usageWithCost = usage.cost() == 0.0 && (usage.inputTokens() > 0 || usage.outputTokens() > 0)
                 ? TokenUsage.of(usage.inputTokens(), usage.outputTokens(),
                         inputPrice(), outputPrice())
                 : usage;
 
-        TokenUsage sessionTotal = sessionUsage.merge(sessionId, usageWithCost, TokenUsage::add);
-        totalInputTokens.add(usageWithCost.inputTokens());
-        totalOutputTokens.add(usageWithCost.outputTokens());
-        totalCostAdder.add(usageWithCost.cost());
+        Map<String, TokenUsage> userSessions = sessionUsage.computeIfAbsent(userId, k -> new ConcurrentHashMap<>());
+        TokenUsage sessionTotal = userSessions.merge(sessionId, usageWithCost, TokenUsage::add);
 
-        log.debug("Session [{}] cost: +¥{} (in={} out={}), session total=¥{}, global total=¥{}",
-                sessionId, String.format("%.4f", usageWithCost.cost()),
+        totalInputByUser.computeIfAbsent(userId, k -> new LongAdder()).add(usageWithCost.inputTokens());
+        totalOutputByUser.computeIfAbsent(userId, k -> new LongAdder()).add(usageWithCost.outputTokens());
+        totalCostByUser.computeIfAbsent(userId, k -> new DoubleAdder()).add(usageWithCost.cost());
+
+        log.debug("User [{}] session [{}] cost: +¥{} (in={} out={}), session total=¥{}, user total=¥{}",
+                userId, sessionId, String.format("%.4f", usageWithCost.cost()),
                 usageWithCost.inputTokens(), usageWithCost.outputTokens(),
                 String.format("%.4f", sessionTotal.cost()),
-                String.format("%.4f", totalCostAdder.sum()));
+                String.format("%.4f", totalCostByUser.get(userId).sum()));
 
         if (!properties.isCostAlertEnabled()) {
             return;
         }
 
-        checkBudget(sessionId, sessionTotal);
+        checkBudget(userId, sessionId, sessionTotal);
     }
 
-    private void checkBudget(String sessionId, TokenUsage sessionTotal) {
+    private void checkBudget(Long userId, String sessionId, TokenUsage sessionTotal) {
         double sessionCost = sessionTotal.cost();
-        double totalCost = totalCostAdder.sum();
+        double totalCost = totalCostByUser.getOrDefault(userId, new DoubleAdder()).sum();
 
-        // Check session hard limit first
         double hardLimit = properties.getSessionCostHardLimit();
         if (hardLimit > 0 && sessionCost >= hardLimit) {
             CostAlert alert = CostAlert.hardLimit(sessionId, sessionCost, hardLimit, totalCost);
-            log.error("COST HARD LIMIT EXCEEDED: session={}, sessionCost=¥{}, limit=¥{}, totalCost=¥{}",
-                    sessionId, String.format("%.4f", sessionCost),
+            log.error("COST HARD LIMIT EXCEEDED: user={}, session={}, sessionCost=¥{}, limit=¥{}, totalCost=¥{}",
+                    userId, sessionId, String.format("%.4f", sessionCost),
                     String.format("%.4f", hardLimit),
                     String.format("%.4f", totalCost));
             fireAlert(sessionId, alert);
             return;
         }
 
-        // Check session warn threshold
         double sessionWarn = properties.getSessionCostWarnThreshold();
         if (sessionCost >= sessionWarn) {
             CostAlert alert = CostAlert.sessionWarn(sessionId, sessionCost, sessionWarn, totalCost);
-            log.warn("COST WARNING (session): session={}, sessionCost=¥{}, threshold=¥{}, totalCost=¥{}",
-                    sessionId, String.format("%.4f", sessionCost),
+            log.warn("COST WARNING (session): user={}, session={}, sessionCost=¥{}, threshold=¥{}, totalCost=¥{}",
+                    userId, sessionId, String.format("%.4f", sessionCost),
                     String.format("%.4f", sessionWarn),
                     String.format("%.4f", totalCost));
             fireAlert(sessionId, alert);
         }
 
-        // Check total warn threshold
         double totalWarn = properties.getTotalCostWarnThreshold();
         if (totalCost >= totalWarn) {
             CostAlert alert = CostAlert.totalWarn(totalCost, totalWarn);
-            log.warn("COST WARNING (total): totalCost=¥{}, threshold=¥{}",
+            log.warn("COST WARNING (total): user={}, totalCost=¥{}, threshold=¥{}",
+                    userId,
                     String.format("%.4f", totalCost),
                     String.format("%.4f", totalWarn));
             fireAlert(null, alert);
@@ -113,13 +117,11 @@ public class CostTracker {
     }
 
     private void fireAlert(String sessionId, CostAlert alert) {
-        // Publish as Spring event
         try {
             eventPublisher.publishEvent(alert);
         } catch (Exception e) {
             log.debug("No listeners for cost alert: {}", e.getMessage());
         }
-        // Notify programmatic listeners
         for (BiConsumer<String, CostAlert> listener : alertListeners) {
             try {
                 listener.accept(sessionId, alert);
@@ -152,35 +154,49 @@ public class CostTracker {
     }
 
     /**
-     * Get total usage for a session.
+     * Get total usage for a user + session.
      */
-    public TokenUsage getSessionUsage(String sessionId) {
-        return sessionUsage.getOrDefault(sessionId, new TokenUsage());
+    public TokenUsage getSessionUsage(Long userId, String sessionId) {
+        Map<String, TokenUsage> userSessions = sessionUsage.get(userId);
+        if (userSessions == null) {
+            return new TokenUsage();
+        }
+        return userSessions.getOrDefault(sessionId, new TokenUsage());
     }
 
     /**
-     * Get total usage across all sessions.
+     * Get total usage across all sessions for a user.
      */
-    public TokenUsage getTotalUsage() {
-        long input = totalInputTokens.sum();
-        long output = totalOutputTokens.sum();
-        return TokenUsage.of(input, output, totalCostAdder.sum());
+    public TokenUsage getTotalUsage(Long userId) {
+        long input = totalInputByUser.getOrDefault(userId, new LongAdder()).sum();
+        long output = totalOutputByUser.getOrDefault(userId, new LongAdder()).sum();
+        double cost = totalCostByUser.getOrDefault(userId, new DoubleAdder()).sum();
+        return TokenUsage.of(input, output, cost);
     }
 
     /**
-     * Reset usage for a session.
+     * Reset usage for a user + session.
      */
-    public void resetSession(String sessionId) {
-        sessionUsage.remove(sessionId);
+    public void resetSession(Long userId, String sessionId) {
+        Map<String, TokenUsage> userSessions = sessionUsage.get(userId);
+        if (userSessions != null) {
+            userSessions.remove(sessionId);
+        }
     }
 
     /**
-     * Reset all usage.
+     * Reset all usage for a user.
      */
-    public void resetAll() {
-        sessionUsage.clear();
-        totalInputTokens.reset();
-        totalOutputTokens.reset();
-        totalCostAdder.reset();
+    public void resetAll(Long userId) {
+        Map<String, TokenUsage> userSessions = sessionUsage.get(userId);
+        if (userSessions != null) {
+            userSessions.clear();
+        }
+        LongAdder in = totalInputByUser.get(userId);
+        if (in != null) in.reset();
+        LongAdder out = totalOutputByUser.get(userId);
+        if (out != null) out.reset();
+        DoubleAdder cost = totalCostByUser.get(userId);
+        if (cost != null) cost.reset();
     }
 }

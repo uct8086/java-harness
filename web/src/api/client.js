@@ -105,8 +105,8 @@ export const listMcpServers = () =>
 export const listMcpTools = () =>
   http.get('/mcp/tools').then(r => r.data)
 
-export const addMcpServer = (name, type, command, args, url) =>
-  http.post('/mcp/servers', { name, type, command, args, url }).then(r => r.data)
+export const addMcpServer = (name, type, url) =>
+  http.post('/mcp/servers', { name, type, url }).then(r => r.data)
 
 export const updateMcpServer = (id, data) =>
   http.put(`/mcp/servers/${id}`, data).then(r => r.data)

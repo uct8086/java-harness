@@ -15,11 +15,13 @@
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `harness_session` (
     `id`            VARCHAR(64)  NOT NULL COMMENT '会话ID(UUID)',
+    `user_id`       BIGINT       NOT NULL COMMENT '所属用户ID',
     `name`          VARCHAR(200) NULL COMMENT '会话名称',
     `created_at`    DATETIME(3)  NULL COMMENT '创建时间',
     `updated_at`    DATETIME(3)  NULL COMMENT '更新时间',
     `message_count` INT          NOT NULL DEFAULT 0 COMMENT '消息数量',
     PRIMARY KEY (`id`),
+    KEY `idx_user_id` (`user_id`),
     KEY `idx_updated_at` (`updated_at`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI会话表';
 
@@ -28,6 +30,7 @@ CREATE TABLE IF NOT EXISTS `harness_session` (
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `harness_message` (
     `id`              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+    `user_id`         BIGINT       NOT NULL COMMENT '所属用户ID',
     `session_id`      VARCHAR(64)  NOT NULL COMMENT '会话ID',
     `role`            VARCHAR(20)  NOT NULL COMMENT '消息角色: SYSTEM/USER/ASSISTANT/TOOL',
     `content`         LONGTEXT     NULL COMMENT '消息内容',
@@ -35,6 +38,7 @@ CREATE TABLE IF NOT EXISTS `harness_message` (
     `tool_call_id`    VARCHAR(128) NULL COMMENT '工具调用ID',
     `created_at`      DATETIME(3)  NULL COMMENT '创建时间',
     PRIMARY KEY (`id`),
+    KEY `idx_user_id` (`user_id`),
     KEY `idx_session_id` (`session_id`),
     KEY `idx_created_at` (`created_at`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI会话消息表';

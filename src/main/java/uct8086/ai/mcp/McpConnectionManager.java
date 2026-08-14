@@ -3,34 +3,25 @@ package uct8086.ai.mcp;
 import uct8086.ai.client.McpClient;
 import uct8086.ai.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
-import io.modelcontextprotocol.client.transport.ServerParameters;
-import uct8086.ai.client.transport.StdioClientTransport;
-import jakarta.annotation.PostConstruct;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import uct8086.ai.mcp.SyncMcpToolCallbackProvider;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.stereotype.Component;
 import uct8086.ai.common.model.McpServerConfig;
 
 /**
- * Manages MCP client connections at runtime.
+ * Manages MCP client connections at runtime, scoped per user.
  *
- * <p>Reads persisted configs from {@link McpConfigManager} and creates
- * real {@link McpSyncClient} instances. Wraps discovered tools via
- * {@link SyncMcpToolCallbackProvider} so they are available to the
- * {@link uct8086.ai.core.engine.AgentEngine}.
- *
- * <p>Connections are refreshed on startup and can be re-triggered via
- * {@link #refresh()} (e.g. from the web UI after adding a new server).
+ * <p>Each user has their own set of MCP connections built from their persisted
+ * configs. Connections are created lazily (on first access / explicit refresh for
+ * that user) rather than eagerly at startup, because users are runtime-authenticated.
  */
 @Component
 public class McpConnectionManager implements DisposableBean {
@@ -38,90 +29,86 @@ public class McpConnectionManager implements DisposableBean {
     private static final Logger log = LoggerFactory.getLogger(McpConnectionManager.class);
 
     private final McpConfigManager configManager;
-    private final List<McpSyncClient> clients = new CopyOnWriteArrayList<>();
-    private final Map<String, String> connectionErrors = new ConcurrentHashMap<>();
-    private volatile SyncMcpToolCallbackProvider provider;
-    private volatile List<ToolCallback> cachedToolCallbacks = List.of();
+
+    // userId -> active MCP clients
+    private final Map<Long, List<McpSyncClient>> clientsByUser = new ConcurrentHashMap<>();
+    // userId -> (serverId -> error message)
+    private final Map<Long, Map<String, String>> connectionErrorsByUser = new ConcurrentHashMap<>();
+    // userId -> cached tool callbacks
+    private final Map<Long, List<ToolCallback>> toolCallbacksByUser = new ConcurrentHashMap<>();
 
     public McpConnectionManager(McpConfigManager configManager) {
         this.configManager = configManager;
     }
 
-    /** Connect to all enabled MCP servers on startup. */
-    @PostConstruct
-    public void initialize() {
-        refresh();
-    }
-
     /**
-     * Close existing connections and re-create from persisted configs.
-     * Called on startup and whenever the user adds/removes a server.
+     * Close existing connections for a user and re-create from their persisted configs.
      */
-    public synchronized void refresh() {
-        closeAll();
+    public synchronized void refresh(Long userId) {
+        closeAll(userId);
 
         List<McpSyncClient> newClients = new ArrayList<>();
-        connectionErrors.clear();
+        Map<String, String> errors = new ConcurrentHashMap<>();
 
-        for (McpServerConfig config : configManager.listAll()) {
+        for (McpServerConfig config : configManager.listAll(userId)) {
             if (!config.enabled()) {
-                log.info("MCP server disabled, skipping: {}", config.name());
+                log.info("MCP server disabled, skipping (user {}): {}", userId, config.name());
                 continue;
             }
             try {
                 McpSyncClient client = createClient(config);
                 client.initialize();
                 newClients.add(client);
-                connectionErrors.remove(config.id());
-                log.info("MCP connected: {} ({} tools)", config.name(),
+                errors.remove(config.id());
+                log.info("MCP connected (user {}): {} ({} tools)", userId, config.name(),
                         client.listTools() != null ? client.listTools().tools().size() : 0);
             } catch (Exception e) {
                 String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                connectionErrors.put(config.id(), msg);
-                log.error("MCP connection failed: {} — {}", config.name(), msg);
+                errors.put(config.id(), msg);
+                log.error("MCP connection failed (user {}): {} — {}", userId, config.name(), msg);
             }
         }
 
-        clients.clear();
-        clients.addAll(newClients);
+        clientsByUser.put(userId, newClients);
+        connectionErrorsByUser.put(userId, errors);
 
-        this.provider = SyncMcpToolCallbackProvider.builder()
-                .mcpClients(this.clients)
-                .build();
+        List<ToolCallback> callbacks = new ArrayList<>();
+        for (McpSyncClient client : newClients) {
+            SyncMcpToolCallbackProvider provider = SyncMcpToolCallbackProvider.builder()
+                    .mcpClients(List.of(client))
+                    .build();
+            callbacks.addAll(Arrays.asList(provider.getToolCallbacks()));
+        }
+        toolCallbacksByUser.put(userId, callbacks);
 
-        this.cachedToolCallbacks = Arrays.asList(this.provider.getToolCallbacks());
-
-        log.info("MCP connection manager: {} active / {} configured",
-                clients.size(), configManager.listAll().size());
+        log.info("MCP connection manager (user {}): {} active / {} configured",
+                userId, newClients.size(), configManager.listAll(userId).size());
     }
 
-    /** All MCP tool callbacks currently available. */
-    public List<ToolCallback> getToolCallbacks() {
-        return cachedToolCallbacks;
+    /** All MCP tool callbacks currently available for the given user. */
+    public List<ToolCallback> getToolCallbacks(Long userId) {
+        List<ToolCallback> cached = toolCallbacksByUser.get(userId);
+        return cached != null ? cached : List.of();
     }
 
     /** Connection-level errors keyed by server id (for UI feedback). */
-    public Map<String, String> getConnectionErrors() {
-        return Map.copyOf(connectionErrors);
+    public Map<String, String> getConnectionErrors(Long userId) {
+        Map<String, String> errors = connectionErrorsByUser.get(userId);
+        return errors != null ? Map.copyOf(errors) : Map.of();
     }
 
-    /** Number of currently active MCP connections. */
-    public int getActiveCount() {
-        return clients.size();
+    /** Number of currently active MCP connections for the given user. */
+    public int getActiveCount(Long userId) {
+        List<McpSyncClient> clients = clientsByUser.get(userId);
+        return clients != null ? clients.size() : 0;
     }
 
     // ---- internals ----
 
     private McpSyncClient createClient(McpServerConfig config) {
-        if ("sse".equalsIgnoreCase(config.type()) || "streamable-http".equalsIgnoreCase(config.type())) {
-            // Both "sse" and "streamable-http" are handled by the Streamable HTTP
-            // transport. The HTTP+SSE transport was deprecated by MCP (2025-03-26) and
-            // Streamable HTTP is its backward-compatible successor, so "sse" configs
-            // are routed here too.
-            return createStreamableHttpClient(config);
-        } else {
-            return createStdioClient(config);
-        }
+        // Only Streamable HTTP is supported. The "sse" type (deprecated HTTP+SSE
+        // transport) is also routed through Streamable HTTP for backward compatibility.
+        return createStreamableHttpClient(config);
     }
 
     private McpSyncClient createStreamableHttpClient(McpServerConfig config) {
@@ -141,33 +128,26 @@ public class McpConnectionManager implements DisposableBean {
         return McpClient.sync(transport).build();
     }
 
-    private McpSyncClient createStdioClient(McpServerConfig config) {
-        List<String> args = config.args() != null ? config.args() : List.of();
-        var params = ServerParameters.builder(config.command())
-                .args(args.toArray(new String[0]))
-                .build();
-
-        // StdioClientTransport needs a JSON mapper; use McpJsonDefaults
-        var transport = new StdioClientTransport(params,
-                io.modelcontextprotocol.json.McpJsonDefaults.getMapper());
-
-        return McpClient.sync(transport).build();
-    }
-
-    private void closeAll() {
-        for (McpSyncClient client : clients) {
-            try {
-                client.close();
-            } catch (Exception ignored) {
-                // best-effort close
+    private void closeAll(Long userId) {
+        List<McpSyncClient> existing = clientsByUser.get(userId);
+        if (existing != null) {
+            for (McpSyncClient client : existing) {
+                try {
+                    client.close();
+                } catch (Exception ignored) {
+                    // best-effort close
+                }
             }
         }
-        clients.clear();
-        cachedToolCallbacks = List.of();
+        clientsByUser.remove(userId);
+        toolCallbacksByUser.remove(userId);
+        connectionErrorsByUser.remove(userId);
     }
 
     @Override
     public void destroy() {
-        closeAll();
+        for (Long userId : clientsByUser.keySet()) {
+            closeAll(userId);
+        }
     }
 }

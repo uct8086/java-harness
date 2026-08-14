@@ -11,6 +11,9 @@ import org.springframework.stereotype.Component;
  * Manager for background tasks.
  * Maps to OpenHarness's Task Management system (TaskCreate/Get/List/Update/Stop/Output).
  *
+ * <p>Tasks are scoped per user, so each user only sees and manipulates their own
+ * tasks.
+ *
  * <p>Supports:
  * <ul>
  *   <li>Creating background tasks with async execution</li>
@@ -24,8 +27,10 @@ public class TaskManager {
 
     private static final Logger log = LoggerFactory.getLogger(TaskManager.class);
 
-    private final Map<String, BackgroundTask> tasks = new ConcurrentHashMap<>();
+    // userId -> taskId -> task
+    private final Map<Long, Map<String, BackgroundTask>> tasks = new ConcurrentHashMap<>();
     private final Map<String, Future<?>> taskFutures = new ConcurrentHashMap<>();
+
     // Bounded pool instead of newCachedThreadPool() to avoid unbounded thread creation
     // (which risks OOM under heavy load). Rejected tasks mark the task as failed.
     private final ExecutorService executor = new ThreadPoolExecutor(
@@ -43,32 +48,36 @@ public class TaskManager {
             },
             (r, executor) -> log.error("Task rejected: executor queue full, task dropped"));
 
+    private Map<String, BackgroundTask> tasksFor(Long userId) {
+        return tasks.computeIfAbsent(userId, k -> new ConcurrentHashMap<>());
+    }
+
     /**
-     * Create and start a background task.
+     * Create and start a background task for the given user.
      *
      * @param name        task name
      * @param description task description
      * @param work        the work to execute
      * @return the created task
      */
-    public BackgroundTask createTask(String name, String description, Callable<String> work) {
+    public BackgroundTask createTask(Long userId, String name, String description, Callable<String> work) {
         BackgroundTask task = new BackgroundTask(name, description);
-        tasks.put(task.id(), task);
+        tasksFor(userId).put(task.id(), task);
 
         Future<?> future = executor.submit(() -> {
-            tasks.put(task.id(), task.started());
-            log.info("Task started: {} ({})", name, task.id());
+            tasksFor(userId).put(task.id(), task.started());
+            log.info("Task started: {} ({}) for user {}", name, task.id(), userId);
 
             try {
                 String result = work.call();
-                tasks.put(task.id(), task.completed(result));
-                log.info("Task completed: {} ({})", name, task.id());
+                tasksFor(userId).put(task.id(), task.completed(result));
+                log.info("Task completed: {} ({}) for user {}", name, task.id(), userId);
             } catch (InterruptedException e) {
-                tasks.put(task.id(), task.cancelled());
-                log.info("Task cancelled: {} ({})", name, task.id());
+                tasksFor(userId).put(task.id(), task.cancelled());
+                log.info("Task cancelled: {} ({}) for user {}", name, task.id(), userId);
             } catch (Exception e) {
-                tasks.put(task.id(), task.failed(e.getMessage()));
-                log.error("Task failed: {} ({})", name, task.id(), e);
+                tasksFor(userId).put(task.id(), task.failed(e.getMessage()));
+                log.error("Task failed: {} ({}) for user {}", name, task.id(), userId, e);
             }
         });
 
@@ -77,63 +86,75 @@ public class TaskManager {
     }
 
     /**
-     * Get a task by ID.
+     * Get a task by ID for the given user.
      */
-    public Optional<BackgroundTask> getTask(String taskId) {
-        return Optional.ofNullable(tasks.get(taskId));
+    public Optional<BackgroundTask> getTask(Long userId, String taskId) {
+        Map<String, BackgroundTask> map = tasks.get(userId);
+        return map != null ? Optional.ofNullable(map.get(taskId)) : Optional.empty();
     }
 
     /**
-     * List all tasks.
+     * List all tasks for the given user.
      */
-    public List<BackgroundTask> listTasks() {
-        return tasks.values().stream()
+    public List<BackgroundTask> listTasks(Long userId) {
+        Map<String, BackgroundTask> map = tasks.get(userId);
+        if (map == null) {
+            return List.of();
+        }
+        return map.values().stream()
                 .sorted(Comparator.comparing(BackgroundTask::createdAt))
                 .toList();
     }
 
     /**
-     * List tasks by status.
+     * List tasks by status for the given user.
      */
-    public List<BackgroundTask> listTasks(TaskStatus status) {
-        return tasks.values().stream()
+    public List<BackgroundTask> listTasks(Long userId, TaskStatus status) {
+        Map<String, BackgroundTask> map = tasks.get(userId);
+        if (map == null) {
+            return List.of();
+        }
+        return map.values().stream()
                 .filter(t -> t.status() == status)
                 .sorted(Comparator.comparing(BackgroundTask::createdAt))
                 .toList();
     }
 
     /**
-     * Cancel a running task.
+     * Cancel a running task for the given user.
      */
-    public boolean cancelTask(String taskId) {
+    public boolean cancelTask(Long userId, String taskId) {
         Future<?> future = taskFutures.get(taskId);
         if (future != null && !future.isDone()) {
             future.cancel(true);
-            BackgroundTask task = tasks.get(taskId);
+            Map<String, BackgroundTask> map = tasks.get(userId);
+            BackgroundTask task = map != null ? map.get(taskId) : null;
             if (task != null) {
-                tasks.put(taskId, task.cancelled());
+                map.put(taskId, task.cancelled());
             }
-            log.info("Task cancelled: {}", taskId);
+            log.info("Task cancelled: {} for user {}", taskId, userId);
             return true;
         }
         return false;
     }
 
     /**
-     * Get task output.
+     * Get task output for the given user.
      */
-    public Optional<String> getTaskOutput(String taskId) {
-        BackgroundTask task = tasks.get(taskId);
+    public Optional<String> getTaskOutput(Long userId, String taskId) {
+        Map<String, BackgroundTask> map = tasks.get(userId);
+        BackgroundTask task = map != null ? map.get(taskId) : null;
         return task != null ? Optional.ofNullable(task.output()) : Optional.empty();
     }
 
     /**
-     * Remove a completed/failed/cancelled task.
+     * Remove a completed/failed/cancelled task for the given user.
      */
-    public boolean removeTask(String taskId) {
-        BackgroundTask task = tasks.get(taskId);
+    public boolean removeTask(Long userId, String taskId) {
+        Map<String, BackgroundTask> map = tasks.get(userId);
+        BackgroundTask task = map != null ? map.get(taskId) : null;
         if (task != null && task.status() != TaskStatus.RUNNING && task.status() != TaskStatus.PENDING) {
-            tasks.remove(taskId);
+            map.remove(taskId);
             taskFutures.remove(taskId);
             return true;
         }

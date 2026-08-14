@@ -12,22 +12,11 @@ import org.springframework.stereotype.Component;
 import uct8086.ai.common.model.McpServerConfig;
 
 /**
- * MCP (Model Context Protocol) client service.
+ * MCP (Model Context Protocol) client service, scoped per user.
  *
- * <p>Spring AI 2.0 auto-creates {@link ToolCallback} beans for each configured
- * MCP server. This service queries those beans to list servers, tools, and
- * invoke them programmatically.
- *
- * <p>Configuration in {@code application.yml}:
- * <pre>{@code
- * spring.ai.mcp.client.stdio.connections:
- *   filesystem:
- *     command: npx
- *     args: ["-y", "@modelcontextprotocol/server-filesystem", "/allowed/dir"]
- * spring.ai.mcp.client.sse.connections:
- *   remote-api:
- *     url: http://remote-server:8080/sse
- * }</pre>
+ * <p>Each user's MCP servers, tools, and tool invocations are isolated via the
+ * {@code userId} parameter passed through to {@link McpConfigManager} and
+ * {@link McpConnectionManager}.
  */
 @Component
 public class McpClientService {
@@ -46,13 +35,12 @@ public class McpClientService {
     }
 
     /**
-     * List all MCP servers with their configuration and runtime status.
-     * Uses {@link McpConnectionManager} to report actual connection state.
+     * List all MCP servers for the given user with their configuration and runtime status.
      */
-    public List<Map<String, Object>> listServers() {
-        List<McpServerConfig> configs = configManager.listAll();
-        Map<String, String> errors = connectionManager.getConnectionErrors();
-        List<ToolCallback> liveTools = connectionManager.getToolCallbacks();
+    public List<Map<String, Object>> listServers(Long userId) {
+        List<McpServerConfig> configs = configManager.listAll(userId);
+        Map<String, String> errors = connectionManager.getConnectionErrors(userId);
+        List<ToolCallback> liveTools = connectionManager.getToolCallbacks(userId);
 
         return configs.stream()
                 .map(c -> {
@@ -83,8 +71,8 @@ public class McpClientService {
                 .toList();
     }
 
-    public List<Map<String, String>> listTools() {
-        List<ToolCallback> liveTools = connectionManager.getToolCallbacks();
+    public List<Map<String, String>> listTools(Long userId) {
+        List<ToolCallback> liveTools = connectionManager.getToolCallbacks(userId);
         return liveTools.stream()
                 .map(cb -> {
                     Map<String, String> info = new HashMap<>();
@@ -96,10 +84,10 @@ public class McpClientService {
     }
 
     /**
-     * Call an MCP tool by name.
+     * Call an MCP tool by name for the given user.
      */
-    public String callTool(String toolName, Map<String, Object> arguments) {
-        List<ToolCallback> liveTools = connectionManager.getToolCallbacks();
+    public String callTool(Long userId, String toolName, Map<String, Object> arguments) {
+        List<ToolCallback> liveTools = connectionManager.getToolCallbacks(userId);
         for (ToolCallback cb : liveTools) {
             if (cb.getToolDefinition().name().equals(toolName)) {
                 try {
