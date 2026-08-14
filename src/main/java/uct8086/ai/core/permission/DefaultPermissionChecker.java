@@ -62,7 +62,7 @@ public class DefaultPermissionChecker implements PermissionChecker {
      */
     private static final List<String> DANGEROUS_FRAGMENTS = List.of(
             "rm -rf", "rm -fr", "rm -r", "rm -f", "del /f", "del /s", "del /q",
-            "format ", "mkfs", "fdisk", "diskpart",
+            "mkfs", "fdisk", "diskpart",
             ":(){ :|:& };:", "dd if=/dev/zero", "dd if=/dev/random", "dd if=/dev/urandom",
             "drop table", "drop database", "truncate table", "delete from ",
             "shutdown", "reboot", "> /dev/sda", "of=/dev/sd", "chmod 777", "chmod -r 777",
@@ -83,7 +83,9 @@ public class DefaultPermissionChecker implements PermissionChecker {
             // command chaining with destructive commands
             Pattern.compile(";\\s*(rm|mkfs|dd|shutdown|reboot|format)\\b"),
             Pattern.compile("&&\\s*(rm|mkfs|dd|shutdown|reboot|format)\\b"),
-            Pattern.compile("\\|\\s*(rm|mkfs|dd|shutdown|reboot|format)\\b")
+            Pattern.compile("\\|\\s*(rm|mkfs|dd|shutdown|reboot|format)\\b"),
+            // format a drive: "format c:", "format d: /fs:ntfs", "format /fs:ntfs d:"
+            Pattern.compile("\\bformat\\s+[a-zA-Z]:")
     );
 
     public DefaultPermissionChecker(HarnessProperties properties) {

@@ -338,7 +338,10 @@ public class HarnessController {
                 request.url(),
                 true
         );
-        return mcpConfigManager.save(userId, config);
+        McpServerConfig saved = mcpConfigManager.save(userId, config);
+        // Auto-connect so the new server's tools are available immediately.
+        mcpConnectionManager.refresh(userId);
+        return saved;
     }
 
     /**
@@ -359,7 +362,9 @@ public class HarnessController {
                             request.url() != null ? request.url() : existing.url(),
                             existing.enabled()
                     );
-                    return mcpConfigManager.save(userId, updated);
+                    McpServerConfig saved = mcpConfigManager.save(userId, updated);
+                    mcpConnectionManager.refresh(userId);
+                    return saved;
                 })
                 .orElseThrow(() -> new IllegalArgumentException("MCP server not found: " + id));
     }
@@ -371,7 +376,11 @@ public class HarnessController {
     public McpServerConfig toggleMcpServer(@PathVariable String id) {
         Long userId = CurrentUser.requireId();
         return mcpConfigManager.get(userId, id)
-                .map(c -> mcpConfigManager.save(userId, c.withEnabled(!c.enabled())))
+                .map(c -> {
+                    McpServerConfig saved = mcpConfigManager.save(userId, c.withEnabled(!c.enabled()));
+                    mcpConnectionManager.refresh(userId);
+                    return saved;
+                })
                 .orElseThrow(() -> new IllegalArgumentException("MCP server not found: " + id));
     }
 
@@ -380,7 +389,12 @@ public class HarnessController {
      */
     @DeleteMapping("/mcp/servers/{id}")
     public Map<String, Boolean> deleteMcpServer(@PathVariable String id) {
-        return Map.of("deleted", mcpConfigManager.delete(CurrentUser.requireId(), id));
+        Long userId = CurrentUser.requireId();
+        boolean deleted = mcpConfigManager.delete(userId, id);
+        if (deleted) {
+            mcpConnectionManager.refresh(userId);
+        }
+        return Map.of("deleted", deleted);
     }
 
     /**

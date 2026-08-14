@@ -90,10 +90,27 @@ public class McpConnectionManager implements DisposableBean {
                 userId, newClients.size(), configManager.listAll(userId).size());
     }
 
-    /** All MCP tool callbacks currently available for the given user. */
+    /**
+     * All MCP tool callbacks currently available for the given user.
+     *
+     * <p>Lazy auto-connect: if no connection has been established yet for this user
+     * but they have enabled MCP configs, trigger a refresh so MCP tools become
+     * available on first use (e.g. first agent turn) without a manual "reconnect".
+     */
     public List<ToolCallback> getToolCallbacks(Long userId) {
         List<ToolCallback> cached = toolCallbacksByUser.get(userId);
-        return cached != null ? cached : List.of();
+        if (cached != null) {
+            return cached;
+        }
+        // Nothing cached yet — auto-connect if the user has enabled configs.
+        boolean hasEnabledConfig = configManager.listAll(userId).stream().anyMatch(McpServerConfig::enabled);
+        if (hasEnabledConfig) {
+            log.info("MCP tools not loaded yet for user {}, auto-connecting...", userId);
+            refresh(userId);
+            List<ToolCallback> loaded = toolCallbacksByUser.get(userId);
+            return loaded != null ? loaded : List.of();
+        }
+        return List.of();
     }
 
     /** Connection-level errors keyed by server id (for UI feedback). */
