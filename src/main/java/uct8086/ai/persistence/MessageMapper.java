@@ -33,4 +33,19 @@ public interface MessageMapper extends BaseMapper<MessageEntity> {
     List<MessageEntity> findByUserIdAndCreatedAtAfter(@Param("userId") Long userId,
                                                       @Param("since") LocalDateTime since,
                                                       @Param("limit") int limit);
+
+    /**
+     * Fetch the most recent {@code limit} messages of a session, ordered ascending by id
+     * (newest {@code limit} rows, returned in chronological order).
+     */
+    @Select("""
+            SELECT * FROM (
+                SELECT * FROM harness_message
+                WHERE user_id = #{userId} AND session_id = #{sessionId}
+                ORDER BY id DESC LIMIT #{limit}
+            ) t ORDER BY id ASC
+            """)
+    List<MessageEntity> findRecentByUserIdAndSessionId(@Param("userId") Long userId,
+                                                       @Param("sessionId") String sessionId,
+                                                       @Param("limit") int limit);
 }

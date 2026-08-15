@@ -68,6 +68,8 @@ public class MemoryVectorService {
 
     /**
      * Retrieve the top-K memories relevant to the query for a given user.
+     *
+     * <p>Uses vector similarity recall, then filters by {@code type} and {@code userId}.
      */
     public List<MemoryEntry> search(Long userId, String query, int topK) {
         if (vectorStore == null) {
@@ -80,17 +82,20 @@ public class MemoryVectorService {
             List<Document> docs = vectorStore.similaritySearch(
                     SearchRequest.builder().query(query).topK(fetchTopK).build());
             long total = docs.size();
+            // Compare userId as strings: PgVectorStore may read the numeric metadata
+            // back as Integer/String rather than Long, so Long.equals() fails silently.
+            String userIdStr = String.valueOf(userId);
             long memoryDocs = docs.stream()
                     .filter(d -> METADATA_TYPE_MEMORY.equals(d.getMetadata().get(METADATA_TYPE)))
                     .count();
             long sameUserDocs = docs.stream()
                     .filter(d -> METADATA_TYPE_MEMORY.equals(d.getMetadata().get(METADATA_TYPE)))
-                    .filter(d -> userId.equals(d.getMetadata().get(METADATA_USER_ID)))
+                    .filter(d -> userIdStr.equals(String.valueOf(d.getMetadata().get(METADATA_USER_ID))))
                     .count();
 
             List<MemoryEntry> result = docs.stream()
                     .filter(d -> METADATA_TYPE_MEMORY.equals(d.getMetadata().get(METADATA_TYPE)))
-                    .filter(d -> userId.equals(d.getMetadata().get(METADATA_USER_ID)))
+                    .filter(d -> userIdStr.equals(String.valueOf(d.getMetadata().get(METADATA_USER_ID))))
                     .limit(topK)
                     .map(d -> new MemoryEntry(
                             (String) d.getMetadata().get(METADATA_MEMORY_ID),

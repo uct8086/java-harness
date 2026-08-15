@@ -6,10 +6,25 @@ import { formatTime, formatNumber } from '@/utils/format'
 const sessions = ref([])
 const loading = ref(false)
 const newName = ref('')
+const PAGE_SIZE = 20
+const hasMore = ref(false)
 
 async function load() {
   loading.value = true
-  try { sessions.value = await listSessions() } finally { loading.value = false }
+  try {
+    sessions.value = await listSessions(0, PAGE_SIZE)
+    hasMore.value = sessions.value.length === PAGE_SIZE
+  } finally { loading.value = false }
+}
+
+async function loadMore() {
+  if (loading.value) return
+  loading.value = true
+  try {
+    const more = await listSessions(sessions.value.length, PAGE_SIZE)
+    sessions.value.push(...more)
+    hasMore.value = more.length === PAGE_SIZE
+  } finally { loading.value = false }
 }
 
 async function create() {
@@ -59,6 +74,12 @@ onMounted(load)
         </div>
       </div>
     </div>
+
+    <div v-if="hasMore" class="load-more">
+      <button class="btn" :disabled="loading" @click="loadMore">
+        {{ loading ? '加载中…' : '加载更多' }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -71,4 +92,5 @@ onMounted(load)
 .item { padding: 16px; }
 .id { font-size: 12px; margin-top: 6px; word-break: break-all; }
 .small { font-size: 13px; }
+.load-more { display: flex; justify-content: center; padding: 8px 0; }
 </style>

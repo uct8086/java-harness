@@ -15,4 +15,9 @@ public interface SessionMapper extends BaseMapper<SessionEntity> {
 
     @Select("SELECT * FROM harness_session WHERE user_id = #{userId} ORDER BY updated_at DESC")
     List<SessionEntity> findByUserIdOrderByUpdatedAtDesc(@Param("userId") Long userId);
+
+    @Select("SELECT * FROM harness_session WHERE user_id = #{userId} ORDER BY updated_at DESC LIMIT #{offset}, #{limit}")
+    List<SessionEntity> findByUserIdOrderByUpdatedAtDescPaged(@Param("userId") Long userId,
+                                                              @Param("offset") long offset,
+                                                              @Param("limit") int limit);
 }

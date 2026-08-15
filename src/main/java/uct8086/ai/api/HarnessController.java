@@ -143,8 +143,10 @@ public class HarnessController {
     // ========== Sessions ==========
 
     @GetMapping("/sessions")
-    public List<uct8086.ai.common.model.SessionInfo> listSessions() {
-        return sessionManager.listSessions(CurrentUser.requireId());
+    public List<uct8086.ai.common.model.SessionInfo> listSessions(
+            @RequestParam(defaultValue = "0") long offset,
+            @RequestParam(defaultValue = "20") int limit) {
+        return sessionManager.listSessions(CurrentUser.requireId(), offset, limit);
     }
 
     @PostMapping("/sessions")

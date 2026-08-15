@@ -13,9 +13,13 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -30,7 +34,9 @@ import org.springframework.stereotype.Component;
  *
  * <p>Redis cache keys:
  * <ul>
- *   <li>{@code harness:session:list:{userId}} -&gt; list of {@link SessionInfo} (TTL 10m)</li>
+ *   <li>{@code harness:session:zset:{userId}} -&gt; ZSET of sessionId scored by updatedAt
+ *       (ordered index for paginated listing)</li>
+ *   <li>{@code harness:session:meta:{userId}:{id}} -&gt; single {@link SessionInfo} JSON (TTL 10m)</li>
  *   <li>{@code harness:session:messages:{userId}:{id}} -&gt; list of {@link AgentMessage} (TTL 10m)</li>
  * </ul>
  */
@@ -39,11 +45,15 @@ public class SessionManager {
 
     private static final Logger log = LoggerFactory.getLogger(SessionManager.class);
 
-    private static final String CACHE_SESSION_LIST_PREFIX = "harness:session:list:";
+    private static final String CACHE_SESSION_ZSET_PREFIX = "harness:session:zset:";
+    private static final String CACHE_SESSION_META_PREFIX = "harness:session:meta:";
     private static final String CACHE_SESSION_MESSAGES_PREFIX = "harness:session:messages:";
     private static final Duration CACHE_TTL = Duration.ofMinutes(10);
+    private static final Duration ZSET_TTL = Duration.ofHours(24);
+    /** Max number of messages loaded/cached per session. */
+    private static final int MAX_MESSAGES_PER_SESSION = 100;
 
-    private static final TypeReference<List<SessionInfo>> SESSION_INFO_LIST_TYPE = new TypeReference<>() {};
+    private static final TypeReference<SessionInfo> SESSION_INFO_TYPE = new TypeReference<>() {};
     private static final TypeReference<List<AgentMessage>> MESSAGE_LIST_TYPE = new TypeReference<>() {};
 
     private final SessionMapper sessionMapper;
@@ -75,7 +85,7 @@ public class SessionManager {
         entity.setUpdatedAt(now);
         entity.setMessageCount(0);
         sessionMapper.insert(entity);
-        invalidateListCache(userId);
+        updateZsetAndMeta(userId, entity);
         log.info("Created session: {} ({}) for user {}", name, id, userId);
         return toConversationSession(entity);
     }
@@ -113,8 +123,8 @@ public class SessionManager {
         entity.setUpdatedAt(LocalDateTime.now());
         sessionMapper.updateById(entity);
 
-        invalidateMessagesCache(userId, sessionId);
-        invalidateListCache(userId);
+        updateMessagesCache(userId, sessionId, message);
+        updateZsetAndMeta(userId, entity);
         log.debug("Added {} message to session {} (total {})", message.role(), sessionId, entity.getMessageCount());
     }
 
@@ -125,32 +135,90 @@ public class SessionManager {
         String cacheKey = messagesCacheKey(userId, sessionId);
         Optional<List<AgentMessage>> cached = readCache(cacheKey, MESSAGE_LIST_TYPE);
         if (cached.isPresent()) {
-            log.debug("Cache hit for messages of session {}", sessionId);
+            log.info("[SESSION-MSG] userId={} session={} 缓存命中, 返回 {} 条消息", userId, sessionId, cached.get().size());
             return cached.get();
         }
-        List<MessageEntity> entities = messageMapper.findByUserIdAndSessionIdOrderByCreatedAtAsc(userId, sessionId);
+        List<MessageEntity> entities = messageMapper.findRecentByUserIdAndSessionId(userId, sessionId, MAX_MESSAGES_PER_SESSION);
         List<AgentMessage> messages = entities.stream().map(this::toAgentMessage).toList();
         cacheJson(cacheKey, messages);
-        log.debug("Loaded {} messages for session {} from DB (cached)", messages.size(), sessionId);
+        log.info("[SESSION-MSG] userId={} session={} 缓存未命中, 从DB加载最近 {} 条并缓存", userId, sessionId, messages.size());
         return messages;
     }
 
     /**
-     * List session infos for the given user (Redis-cached).
+     * List session infos for the given user, paginated and ordered by most-recently
+     * updated.
+     *
+     * <p>Backed by a Redis ZSET (ordered index of session ids scored by updatedAt) plus
+     * per-session meta cache. Falls back to a direct DB paginated query if Redis is
+     * unavailable or the ZSET is cold.
+     */
+    public List<SessionInfo> listSessions(Long userId, long offset, int limit) {
+        List<SessionInfo> cached = listFromZset(userId, offset, limit);
+        if (cached != null) {
+            log.info("[SESSION-LIST] userId={} offset={} limit={} 命中ZSET缓存, 返回 {} 条",
+                    userId, offset, limit, cached.size());
+            return cached;
+        }
+        // Redis unavailable or ZSET missing → fall back to DB pagination.
+        List<SessionInfo> fromDb = sessionMapper
+                .findByUserIdOrderByUpdatedAtDescPaged(userId, offset, limit)
+                .stream().map(this::toSessionInfo).toList();
+        log.info("[SESSION-LIST] userId={} offset={} limit={} ZSET未命中, 降级DB查询, 返回 {} 条",
+                userId, offset, limit, fromDb.size());
+        return fromDb;
+    }
+
+    /**
+     * Legacy convenience: list the first {@code limit} sessions (default 10).
      */
     public List<SessionInfo> listSessions(Long userId) {
-        String cacheKey = listCacheKey(userId);
-        Optional<List<SessionInfo>> cached = readCache(cacheKey, SESSION_INFO_LIST_TYPE);
-        if (cached.isPresent()) {
-            log.debug("Cache hit for session list of user {}", userId);
-            return cached.get();
+        return listSessions(userId, 0, 20);
+    }
+
+    /**
+     * Attempt to read a page of sessions from the ZSET + meta caches. Returns null when
+     * Redis is unavailable or the ZSET does not exist (caller falls back to DB).
+     */
+    private List<SessionInfo> listFromZset(Long userId, long offset, int limit) {
+        String zsetKey = zsetKey(userId);
+        try {
+            if (Boolean.FALSE.equals(redisTemplate.hasKey(zsetKey))) {
+                log.info("[SESSION-LIST] userId={} ZSET key 不存在 (冷缓存)", userId);
+                return null;
+            }
+            Set<String> ids = redisTemplate.opsForZSet().reverseRange(zsetKey, offset, offset + limit - 1);
+            if (ids == null || ids.isEmpty()) {
+                log.info("[SESSION-LIST] userId={} offset={} ZSET 该页无数据", userId, offset);
+                return List.of();
+            }
+            // Batch-fetch per-session meta; missing entries are back-filled from DB.
+            List<SessionInfo> result = new ArrayList<>();
+            int metaHit = 0;
+            int backfilled = 0;
+            for (String id : ids) {
+                SessionInfo meta = readSessionMeta(userId, id);
+                if (meta != null) {
+                    result.add(meta);
+                    metaHit++;
+                } else {
+                    // Meta missing (cache evicted) → back-fill from DB.
+                    SessionEntity e = sessionMapper.selectById(id);
+                    if (e != null && userId.equals(e.getUserId())) {
+                        SessionInfo info = toSessionInfo(e);
+                        writeSessionMeta(userId, info);
+                        result.add(info);
+                        backfilled++;
+                    }
+                }
+            }
+            log.info("[SESSION-LIST] userId={} ZSET取到 {} 个id, meta命中 {} 个, DB回填 {} 个",
+                    userId, ids.size(), metaHit, backfilled);
+            return result;
+        } catch (Exception e) {
+            log.warn("Failed to read session list from ZSET for user {}: {}", userId, e.getMessage());
+            return null;
         }
-        List<SessionInfo> sessions = sessionMapper.findByUserIdOrderByUpdatedAtDesc(userId).stream()
-                .map(this::toSessionInfo)
-                .toList();
-        cacheJson(cacheKey, sessions);
-        log.debug("Loaded {} sessions for user {} from DB (cached)", sessions.size(), userId);
-        return sessions;
     }
 
     /**
@@ -166,7 +234,7 @@ public class SessionManager {
                 .eq(MessageEntity::getSessionId, sessionId));
         sessionMapper.deleteById(sessionId);
         invalidateMessagesCache(userId, sessionId);
-        invalidateListCache(userId);
+        removeFromZsetAndMeta(userId, sessionId);
         log.info("Deleted session: {} for user {}", sessionId, userId);
         return true;
     }
@@ -180,27 +248,120 @@ public class SessionManager {
                 .stream().map(SessionEntity::getId).toList();
         sessionMapper.delete(Wrappers.<SessionEntity>lambdaQuery().eq(SessionEntity::getUserId, userId));
         messageMapper.delete(Wrappers.<MessageEntity>lambdaQuery().eq(MessageEntity::getUserId, userId));
-        invalidateListCache(userId);
-        ids.forEach(id -> invalidateMessagesCache(userId, id));
+        clearUserZset(userId);
+        ids.forEach(id -> {
+            invalidateMessagesCache(userId, id);
+            deleteSessionMeta(userId, id);
+        });
         log.info("All sessions cleared for user {}", userId);
     }
 
     // ========== Cache helpers ==========
 
-    private static String listCacheKey(Long userId) {
-        return CACHE_SESSION_LIST_PREFIX + userId;
+    private static String zsetKey(Long userId) {
+        return CACHE_SESSION_ZSET_PREFIX + userId;
+    }
+
+    private static String metaKey(Long userId, String sessionId) {
+        return CACHE_SESSION_META_PREFIX + userId + ":" + sessionId;
     }
 
     private static String messagesCacheKey(Long userId, String sessionId) {
         return CACHE_SESSION_MESSAGES_PREFIX + userId + ":" + sessionId;
     }
 
-    private void invalidateListCache(Long userId) {
-        redisTemplate.delete(listCacheKey(userId));
+    /** Update (or insert) the ZSET score and per-session meta for the given entity. */
+    private void updateZsetAndMeta(Long userId, SessionEntity entity) {
+        try {
+            double score = toEpochMilli(entity.getUpdatedAt());
+            redisTemplate.opsForZSet().add(zsetKey(userId), entity.getId(), score);
+            redisTemplate.expire(zsetKey(userId), ZSET_TTL);
+            writeSessionMeta(userId, toSessionInfo(entity));
+            log.info("[SESSION-CACHE] userId={} session={} 更新ZSET(score={}) + meta缓存",
+                    userId, entity.getId(), score);
+        } catch (Exception e) {
+            log.warn("Failed to update session ZSET/meta for user {} session {}", userId, entity.getId(), e);
+        }
+    }
+
+    private void removeFromZsetAndMeta(Long userId, String sessionId) {
+        try {
+            redisTemplate.opsForZSet().remove(zsetKey(userId), sessionId);
+        } catch (Exception e) {
+            log.warn("Failed to remove session from ZSET for user {}: {}", userId, e.getMessage());
+        }
+        deleteSessionMeta(userId, sessionId);
+    }
+
+    private void clearUserZset(Long userId) {
+        try {
+            redisTemplate.delete(zsetKey(userId));
+        } catch (Exception e) {
+            log.warn("Failed to clear session ZSET for user {}: {}", userId, e.getMessage());
+        }
+    }
+
+    private void writeSessionMeta(Long userId, SessionInfo info) {
+        try {
+            redisTemplate.opsForValue().set(metaKey(userId, info.id()),
+                    objectMapper.writeValueAsString(info), CACHE_TTL);
+        } catch (Exception e) {
+            log.warn("Failed to write session meta {} for user {}", info.id(), userId, e);
+        }
+    }
+
+    private SessionInfo readSessionMeta(Long userId, String sessionId) {
+        try {
+            String json = redisTemplate.opsForValue().get(metaKey(userId, sessionId));
+            if (json != null) {
+                return objectMapper.readValue(json, SESSION_INFO_TYPE);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to read session meta {} for user {}", sessionId, userId, e);
+        }
+        return null;
+    }
+
+    private void deleteSessionMeta(Long userId, String sessionId) {
+        try {
+            redisTemplate.delete(metaKey(userId, sessionId));
+        } catch (Exception e) {
+            log.warn("Failed to delete session meta {} for user {}", sessionId, userId, e);
+        }
+    }
+
+    /**
+     * Append a newly-added message to the cached message list instead of invalidating
+     * the whole cache. This is safe because writes for a single user/session are
+     * serialized (single sign-on + per-session key), so there is no concurrent
+     * read-modify-write race.
+     */
+    private void updateMessagesCache(Long userId, String sessionId, AgentMessage message) {
+        try {
+            String cacheKey = messagesCacheKey(userId, sessionId);
+            Optional<List<AgentMessage>> cached = readCache(cacheKey, MESSAGE_LIST_TYPE);
+            List<AgentMessage> updated = new ArrayList<>();
+            if (cached.isPresent()) {
+                updated.addAll(cached.get());
+            }
+            updated.add(message);
+            // Keep only the most recent MAX_MESSAGES_PER_SESSION messages.
+            if (updated.size() > MAX_MESSAGES_PER_SESSION) {
+                updated = new ArrayList<>(updated.subList(updated.size() - MAX_MESSAGES_PER_SESSION, updated.size()));
+            }
+            cacheJson(cacheKey, updated);
+            log.info("[SESSION-MSG] userId={} session={} 更新消息缓存, 现 {} 条", userId, sessionId, updated.size());
+        } catch (Exception e) {
+            log.warn("Failed to update messages cache for session {} user {}", sessionId, userId, e);
+        }
     }
 
     private void invalidateMessagesCache(Long userId, String sessionId) {
-        redisTemplate.delete(messagesCacheKey(userId, sessionId));
+        try {
+            redisTemplate.delete(messagesCacheKey(userId, sessionId));
+        } catch (Exception e) {
+            log.warn("Failed to invalidate messages cache for session {} user {}", sessionId, userId, e);
+        }
     }
 
     private void cacheJson(String key, Object value) {
@@ -221,6 +382,10 @@ public class SessionManager {
             log.warn("Failed to read cache key {}", key, e);
         }
         return Optional.empty();
+    }
+
+    private static double toEpochMilli(LocalDateTime ldt) {
+        return ldt != null ? ldt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli() : 0d;
     }
 
     // ========== Conversion helpers ==========

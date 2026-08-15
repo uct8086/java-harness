@@ -41,8 +41,8 @@ export const chatWithContext = (prompt, sessionId, additionalContext) =>
   http.post('/chat-with-context', { prompt, sessionId, additionalContext }).then(r => r.data)
 
 // ---------- Sessions ----------
-export const listSessions = () =>
-  http.get('/sessions').then(r => r.data)
+export const listSessions = (offset = 0, limit = 20) =>
+  http.get('/sessions', { params: { offset, limit } }).then(r => r.data)
 
 export const createSession = (name) =>
   http.post('/sessions', null, { params: name ? { name } : {} }).then(r => r.data)
