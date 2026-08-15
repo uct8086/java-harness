@@ -10,18 +10,19 @@ UCT8086-AI（Open Agent Harness）是一个用 Java 技术栈实现的 AI Agent 
 
 | 能力 | 说明 |
 |------|------|
-| **Agent Loop** | 查询 → 模型调用 → 工具执行 → 结果回传 → 循环直到完成 |
+| **Agent Loop** | 查询 → 模型调用 → 工具执行 → 结果回传 → 循环直到完成，支持 **SSE 流式** token 级输出 |
+| **Authentication / Authorization** | Spring Security + Cookie Token 登录，用户/角色（ROLE_USER/ROLE_ADMIN），**全功能按用户隔离** |
 | **Tool Registry** | 工具注册、发现、分类管理，支持动态注册插件和 MCP 工具 |
 | **Permission System** | 四级安全模式（DEFAULT / AUTO / PLAN_MODE / READ_ONLY），路径级规则控制，危险命令拦截 |
 | **Hook System** | PreToolUse / PostToolUse 生命周期钩子，支持阻止执行或修改结果 |
-| **Skill System** | 基于 Markdown 的技能加载，支持 YAML frontmatter，多目录加载 |
-| **Memory System** | 持久化跨会话记忆，基于 MEMORY.md 文件存储 |
-| **Session Management** | 会话创建、恢复、历史记录、消息追踪 |
-| **Cost Tracking** | Token 用量和成本追踪，按会话和全局维度统计 |
-| **Multi-Agent Coordination** | 子 Agent 生成、团队管理、任务委派 |
-| **RAG Knowledge Base** | 基于 pgvector + Ollama 的语义检索，自动注入相关文档到 Prompt |
-| **MCP Client** | Model Context Protocol 客户端集成 |
-| **Slash Commands** | 斜杠命令系统（`/help`、`/commit` 等） |
+| **Skill System** | 系统技能（代码目录 Markdown）+ 用户技能（MySQL `harness_skill` 表） |
+| **Memory System** | 跨会话记忆，**MySQL 持久化 + 系统自动总结 + pgvector 相关检索** |
+| **Session Management** | 会话创建、恢复、历史记录（Redis ZSET + meta 缓存），消息缓存限 100 条 |
+| **Cost Tracking** | Token 用量与成本追踪（MySQL `cost_usage` 明细），**按用户配额熔断** |
+| **Multi-Agent Coordination** | 子 Agent 生成、团队管理、任务委派（Redis Stream 分布式任务） |
+| **RAG Knowledge Base** | 基于 pgvector + Ollama 的语义检索，与记忆按 userId/type 隔离 |
+| **MCP Client** | Model Context Protocol 客户端集成（Streamable HTTP，超时 + 自动连接） |
+| **Metrics** | Actuator + Prometheus 指标（请求、Token、耗时） |
 | **REST API** | 全功能 HTTP API，暴露所有子系统 |
 
 ## 技术栈
@@ -31,11 +32,13 @@ UCT8086-AI（Open Agent Harness）是一个用 Java 技术栈实现的 AI Agent 
 | Java | 21 |
 | Spring Boot | 4.0.0 |
 | Spring AI | 2.0.0 |
-| MySQL | 8.0（会话/消息持久化） |
-| Redis | 7.x（会话缓存） |
-| PostgreSQL + pgvector | 17（向量存储） |
+| Spring Security | 7.x（认证授权） |
+| MyBatis-Plus | 3.5.x（`mybatis-plus-spring-boot4-starter`） |
+| MySQL | 8.0（会话/消息/记忆/技能/成本/用户角色持久化） |
+| Redis | 7.x（会话缓存、Task Stream、熔断标记） |
+| PostgreSQL + pgvector | 17（向量存储：知识库 + 记忆） |
 | Ollama | `bge-m3` 模型（本地 Embedding） |
-| Lombok | (Spring Boot managed) |
+| Micrometer + Prometheus | Actuator 指标 |
 | 构建工具 | Maven |
 
 ## 模块结构
@@ -44,13 +47,17 @@ UCT8086-AI（Open Agent Harness）是一个用 Java 技术栈实现的 AI Agent 
 uct8086-ai/
 ├── pom.xml                          # 父 POM（模块管理 + 依赖版本）
 ├── common/                   # 公共模块：枚举、模型、异常
-├── core/                     # 核心模块：Agent 引擎、工具、权限、Hook、会话、成本
-├── skills/                   # 技能模块：Markdown 技能加载与注册
-├── memory/                    # 记忆模块：持久化记忆存储
-├── tasks/                    # 任务模块：后台任务管理
+├── auth/                     # 认证授权：实体、Mapper、Service、Controller、Security 配置
+├── persistence/              # 持久化：会话/消息 Entity + Mapper（MyBatis-Plus）
+├── core/                     # 核心模块：Agent 引擎、工具、权限、Hook、会话、成本、Prompt
+├── skills/                   # 技能模块：系统技能加载 + 用户技能（MySQL）
+├── memory/                   # 记忆模块：MySQL 存储 + 向量检索 + 自动总结
+├── tasks/                    # 任务模块：Redis Stream 分布式任务
 ├── coordinator/              # 协调模块：多 Agent 协作
 ├── mcp/                      # MCP 模块：Model Context Protocol 客户端
-├── app/                      # 应用模块：Spring Boot 启动 + REST API
+├── metrics/                  # 指标：ChatMetrics（Actuator/Prometheus）
+├── config/                   # 配置：RedisConfig、PgVectorConfig 等
+├── api/                      # REST API：HarnessController、全局异常处理
 └── web/                      # 前端模块：Vue 3 + Vite Web UI
 ```
 
@@ -63,18 +70,19 @@ uct8086-ai/
 用户输入 Prompt
       │
       ▼
+┌─────────────────────────────┐
+│  buildSystemPrompt (AgentEngine)  │  组装上下文：基础系统提示 + 系统/用户技能
+│                                  │  + 相关记忆（pgvector 检索 top5）+ RAG 文档
+└──────┬───────────────────────┘
+       │
+       ▼
 ┌─────────────┐
-│ PromptAssembler │  组装系统提示（Agent 身份 + 工具描述 + 技能 + 记忆 + 安全指南）
+│ SessionManager │  读取最近 10 条历史消息（Redis 消息缓存，限 100 条）
 └──────┬──────┘
        │
        ▼
 ┌─────────────┐
-│ SessionManager │  创建或恢复会话，记录消息历史
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐
-│  ChatClient  │  调用 Spring AI ChatClient，携带 ToolCallback
+│  ChatClient  │  调用 Spring AI ChatClient，携带历史消息 + ToolCallback
 │  (Spring AI) │
 └──────┬──────┘
        │
@@ -114,10 +122,12 @@ uct8086-ai/
 
 | 模式 | 行为 |
 |------|------|
-| `DEFAULT` | 写操作前询问用户确认（日常开发模式） |
+| `DEFAULT` | 危险命令拦截 + 路径规则（写操作审批机制待实现） |
 | `AUTO` | 自动允许所有操作（沙箱环境） |
 | `PLAN_MODE` | 阻止所有写操作（审查模式） |
 | `READ_ONLY` | 仅允许只读操作 |
+
+> **注意**：当前 `DEFAULT` 模式下，危险命令检测仅对 `bash`（SHELL 类）工具生效，文件工具内容不会被误判。写操作的「用户确认审批」机制尚未实现（`askUser` 为 TODO），属已知待办。
 
 ### RAG 知识库
 
@@ -149,6 +159,8 @@ DeepSeek Chat API（生成回答）
 | **PostgreSQL + pgvector** | 向量存储 | 存储知识库文档向量，支持余弦相似度搜索和 HNSW 索引 |
 
 **为什么不直接用 DeepSeek 做 Embedding？** DeepSeek 专注对话/推理模型，不提供 Embedding API。Ollama 本地补位，无需额外购买 API Key。
+
+> **记忆检索同样走 pgvector**：用户的长期记忆（`harness_memory` 表）在写入时也同步 embedding 到同一个 pgvector，检索时通过 `metadata.type=memory` + `metadata.userId` 与知识库文档隔离，只注入当前用户的相关记忆（top-5）。
 
 ### 内置工具
 
@@ -213,7 +225,13 @@ mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS uct8086_ai DEFAULT CHARACTER 
 mysql -u root -p uct8086_ai < docker/mysql/init/init.sql
 ```
 
-脚本会创建 `harness_session`、`harness_message`、`auth_user`、`auth_role`、`auth_user_role` 五张表，并初始化默认角色（`ROLE_USER`/`ROLE_ADMIN`）与默认管理员账号 **`admin / admin123`**（首次部署后请尽快修改密码）。
+脚本会创建以下表，并初始化默认角色（`ROLE_USER`/`ROLE_ADMIN`）与默认管理员账号 **`admin / admin123`**（首次部署后请尽快修改密码）：
+
+- `auth_user`、`auth_role`、`auth_user_role` — 用户、角色及关联
+- `harness_session`、`harness_message` — 会话与消息
+- `harness_memory` — 用户长期记忆（MySQL 真相源）
+- `cost_usage` — 成本使用明细（配额熔断依据）
+- `harness_skill` — 用户自定义技能
 
 **4. Ollama**（本地 Embedding，需单独安装）：
 ```bash
@@ -340,11 +358,12 @@ SPRING_AI_OPENAI_API_KEY=sk-your-deepseek-key mvn spring-boot:run
 
 | 路由 | 对接 API | 功能 |
 |------|----------|------|
-| `/` (ChatView) | `POST /api/chat`, `GET /api/sessions/{id}/messages` | 对话界面：聊天气泡流、工具调用记录、Token 消耗 |
-| `/sessions` | `GET/POST/DELETE /api/sessions` | 会话增删查 |
+| `/login` | `POST /api/auth/login` | 登录（Cookie Token 认证） |
+| `/` (ChatView) | `POST /api/chat/stream`, `GET /api/sessions/{id}/messages` | 对话界面：SSE 流式、工具调用记录、Token 消耗 |
+| `/sessions` | `GET/POST/DELETE /api/sessions` | 会话增删查（分页） |
 | `/tools` | `GET /api/tools` | 工具注册表浏览 |
-| `/skills` | `GET/POST /api/skills` | 技能加载与新增 |
-| `/memory` | `GET/POST /api/memory`, `GET /api/memory/search` | 持久化记忆管理 |
+| `/skills` | `GET/POST /api/skills` | 技能浏览与新增（用户技能存 MySQL） |
+| `/memory` | `GET/PUT/DELETE /api/memory`, `POST /api/memory/consolidate` | 记忆查看/编辑/删除 + 手动触发总结 |
 | `/tasks` | `GET/DELETE /api/tasks` | 后台任务监控 |
 | `/knowledge` | `POST /api/knowledge/ingest`, `GET /api/knowledge/search` | RAG 知识库摄入与搜索 |
 | `/settings` | `GET/PUT /api/permission/mode`, `GET /api/cost/total` | 权限模式与费用统计 |
@@ -492,7 +511,25 @@ description: Git 操作指南和最佳实践
 
 - **枚举**: `AgentRole`、`HookPhase`、`PermissionDecision`、`PermissionMode`、`TaskStatus`、`ToolCategory`
 - **模型**: `AgentMessage`、`HookContext`、`HookDefinition`、`HookResult`、`PathRule`、`PermissionResult`、`SessionInfo`、`TokenUsage`、`ToolDescriptor`、`ToolExecutionContext`、`ToolResult`（包：`uct8086.ai.common.model`）
-- **异常**: `Uct8086Exception`、`PermissionDeniedException`、`SkillLoadException`、`ToolExecutionException`
+- **异常**: `Uct8086Exception`、`PermissionDeniedException`、`SkillLoadException`、`ToolExecutionException`、`CostLimitExceededException`
+
+### auth
+
+认证与授权（Spring Security）：
+
+- `UserEntity` / `RoleEntity` — 用户、角色实体（MySQL `auth_user`/`auth_role`）
+- `UserMapper` / `RoleMapper` — MyBatis-Plus Mapper
+- `AuthService` / `AuthTokenService` / `AuthController` — 登录、Token 签发
+- `AuthTokenFilter` — Cookie Token 认证过滤器
+- `SecurityConfig` — 安全配置（路径权限、放行规则）
+- `CurrentUser` — 当前用户上下文（基于 ThreadLocal）
+
+### persistence
+
+持久化层（MyBatis-Plus）：
+
+- `SessionEntity` / `MessageEntity` — 会话、消息实体
+- `SessionMapper` / `MessageMapper` — 分页查询、增量查询
 
 ### core
 
@@ -504,8 +541,8 @@ description: Git 操作指南和最佳实践
 - **permission** — `PermissionChecker` 接口、`DefaultPermissionChecker`（四级安全模式 + 路径规则 + 危险命令拦截）
 - **hook** — `HookManager`、`ToolHook` 接口（PreToolUse/PostToolUse 生命周期）
 - **prompt** — `PromptAssembler`（系统提示组装）
-- **session** — `SessionManager`（会话管理 + 消息历史）
-- **cost** — `CostTracker`（Token 用量与成本追踪）
+- **session** — `SessionManager`（会话管理 + 消息历史，Redis ZSET + meta 缓存，消息缓存限 100 条）
+- **cost** — `CostTracker`（Token 用量与成本追踪，MySQL 明细 + 按用户配额熔断）
 - **command** — `CommandRegistry`、`HarnessCommand` 接口（Slash 命令系统）
 - **config** — `HarnessProperties`（`uct8086.ai.*` 配置）、`HarnessCoreAutoConfiguration`（自动注册工具）
 
@@ -515,22 +552,26 @@ description: Git 操作指南和最佳实践
 
 - `Skill` — 技能 record（name, description, content, sourcePath, metadata）（包：`uct8086.ai.skills`）
 - `SkillLoader` — 从文件系统加载 Markdown 技能，解析 YAML frontmatter
-- `SkillRegistry` — 技能注册表，支持项目 `.uct8086/skills/` 目录加载
+- `SkillRegistry` — 技能注册表：系统技能（项目目录）+ 用户技能（MySQL `harness_skill` 表）
+- `SkillEntity` / `SkillMapper` — 用户技能持久化
 
 ### memory
 
-持久化记忆存储：
+持久化记忆存储 + 向量检索 + 自动总结：
 
 - `MemoryEntry` — 记忆条目 record（id, category, content, createdAt, updatedAt）（包：`uct8086.ai.memory`）
 - `MemoryStore` — 记忆存储接口
-- `FileMemoryStore` — 基于 MEMORY.md 文件实现，内存索引 + 文件持久化
+- `MySqlMemoryStore` — 基于 MySQL `harness_memory` 表（真相源）
+- `MemoryVectorService` — 记忆向量化写入 pgvector，按 userId 相关检索
+- `MemoryConsolidationService` — 定时批量自动总结用户偏好/事实（`@Scheduled` + Redis 水位线）
+- `FileMemoryStore` — 旧的文件实现（已弃用，不再注册为 Bean）
 
 ### tasks
 
-后台任务管理：
+后台任务管理（分布式）：
 
 - `BackgroundTask` — 后台任务 record（状态机：PENDING → RUNNING → COMPLETED/FAILED/CANCELLED）（包：`uct8086.ai.tasks`）
-- `TaskManager` — 任务创建、异步执行、状态追踪、取消
+- `TaskManager` — 基于 **Redis Stream + 消费组** 的分布式任务（任务状态存 Redis Hash，跨实例共享、重启可恢复）
 
 ### coordinator
 
@@ -568,6 +609,8 @@ Vue 3 + Vite 5 前端界面：
 |--------|--------|------|
 | `uct8086.ai.permission-mode` | `DEFAULT` | 权限模式 |
 | `uct8086.ai.max-turns` | `50` | Agent Loop 最大迭代次数 |
+| `uct8086.ai.max-history-messages` | `10` | 注入 Prompt 的历史消息最大条数 |
+| `uct8086.ai.mcp-request-timeout-seconds` | `30` | MCP 工具调用超时（秒） |
 | `uct8086.ai.retry-enabled` | `true` | 是否启用 API 重试 |
 | `uct8086.ai.max-retries` | `3` | 最大重试次数 |
 | `uct8086.ai.retry-delay-ms` | `1000` | 重试初始延迟（毫秒） |
@@ -578,7 +621,14 @@ Vue 3 + Vite 5 前端界面：
 | `uct8086.ai.model` | (null) | 模型覆盖 |
 | `uct8086.ai.temperature` | `0.7` | 温度参数 |
 | `uct8086.ai.system-prompt` | (null) | 自定义系统提示（null = 默认） |
+| `uct8086.ai.cost-alert-enabled` | `true` | 成本告警开关 |
+| `uct8086.ai.session-cost-warn-threshold` | `5.0` | 会话成本告警阈值（元） |
+| `uct8086.ai.session-cost-hard-limit` | `0.0` | 会话成本硬上限（0=禁用） |
+| `uct8086.ai.user-cost-hard-limit` | `0.01` | 用户总成本硬上限，超限熔断（0=禁用） |
+| `uct8086.ai.cost-breaker-enabled` | `true` | 成本熔断开关 |
+| `uct8086.ai.memory.consolidation-cron` | `0 0 * * * *` | 记忆自动总结 cron（默认每小时） |
 | `server.port` | `9081` | 服务端口 |
+| `spring.ai.openai.timeout` | `300s` | OpenAI(DeepSeek) 请求超时 |
 | `spring.ai.openai.embedding.enabled` | `false` | DeepSeek 不支持 Embedding，必须关闭 |
 | `spring.ai.ollama.embedding.options.model` | `bge-m3` | Ollama Embedding 模型（1024 维） |
 | `spring.ai.ollama.chat.enabled` | `false` | Ollama 不用于 Chat，只用 Embedding |
