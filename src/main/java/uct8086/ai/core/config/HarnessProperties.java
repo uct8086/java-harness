@@ -3,6 +3,7 @@ package uct8086.ai.core.config;
 import lombok.Getter;
 import lombok.Setter;
 import uct8086.ai.common.enums.PermissionMode;
+import uct8086.ai.coordinator.OrchestrationMode;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -55,6 +56,10 @@ public class HarnessProperties {
     /** Model to use */
     @Getter
     private String model;
+
+    /** Multi-agent orchestration settings (maps to OpenHarness's Coordinator Mode) */
+    @Getter
+    private final Orchestration orchestration = new Orchestration();
 
     /** Temperature for the model */
     @Getter
@@ -110,6 +115,22 @@ public class HarnessProperties {
         return workingDirectory != null && !workingDirectory.isBlank()
                 ? workingDirectory
                 : System.getProperty("user.dir");
+    }
+
+    /**
+     * Multi-agent orchestration settings. Maps to OpenHarness's Coordinator
+     * Mode, which decides who holds the orchestration decision rights.
+     */
+    @Getter
+    @Setter
+    public static class Orchestration {
+        /**
+         * Orchestration topology:
+         * LOCAL — single agent, orchestration tools are not registered;
+         * COORDINATOR — star topology, only the main agent can spawn sub-agents;
+         * SWARM — recursive topology, sub-agents can spawn further agents too.
+         */
+        private OrchestrationMode mode = OrchestrationMode.COORDINATOR;
     }
 
 }

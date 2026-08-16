@@ -1,6 +1,7 @@
 package uct8086.ai.core.prompt;
 
 import java.util.List;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -37,6 +38,20 @@ public class PromptAssembler {
      * @return the assembled system prompt
      */
     public String buildSystemPrompt(String additionalContext) {
+        return buildSystemPrompt(additionalContext, Set.of());
+    }
+
+    /**
+     * Build the complete system prompt, hiding the given tools from the
+     * "Available tools" list and from the orchestration guidance. Used by
+     * {@code AgentEngine} to implement the orchestration mode topology
+     * (e.g. COORDINATOR hides the orchestration primitives from sub-agents).
+     *
+     * @param additionalContext extra context to append (skills, memory, etc.)
+     * @param excludedTools     tool names hidden from this run's prompt
+     * @return the assembled system prompt
+     */
+    public String buildSystemPrompt(String additionalContext, Set<String> excludedTools) {
         StringBuilder sb = new StringBuilder();
 
         // Base identity
@@ -51,12 +66,14 @@ public class PromptAssembler {
             Available tools:
             """);
 
-        // Tool descriptions
-        toolRegistry.listTools().forEach(desc -> {
-            sb.append("- ").append(desc.name())
-              .append(" (").append(desc.category()).append(")")
-              .append(": ").append(desc.description()).append("\n");
-        });
+        // Tool descriptions (minus the ones excluded for this run)
+        toolRegistry.listTools().stream()
+                .filter(desc -> !excludedTools.contains(desc.name()))
+                .forEach(desc -> {
+                    sb.append("- ").append(desc.name())
+                      .append(" (").append(desc.category()).append(")")
+                      .append(": ").append(desc.description()).append("\n");
+                });
 
         // Additional context (skills, memory, project config)
         if (additionalContext != null && !additionalContext.isBlank()) {
@@ -65,9 +82,31 @@ public class PromptAssembler {
             sb.append("\n");
         }
 
+        // Orchestration guidance (only when the 'agent' tool is registered AND visible here)
+        if (toolRegistry.hasTool("agent") && !excludedTools.contains("agent")) {
+            sb.append("""
+
+                --- Agent Coordination ---
+                You may act as an orchestrator. For a complex task that can be broken into
+                independent parts, use the 'agent' tool to delegate each part to a sub-agent
+                with a focused role. Each sub-agent runs in its own isolated session and its
+                result comes back to you, so you can combine results into the final answer.
+
+                Coordination primitives:
+                - agent(name, role, task): delegate a subtask and wait for the sub-agent's answer.
+                - agent(..., wait=false): start the sub-agent in the background and keep working;
+                  call this several times to run sub-agents in parallel.
+                - send_message(name, message): continue a finished sub-agent (it remembers its
+                  session context), or wait for a background one and get its reply.
+                - task_stop(name): abort a sub-agent that went off track or is no longer needed.
+
+                Prefer delegating only when it genuinely helps; otherwise solve the task directly.
+                """);
+        }
+
         // Safety guidelines
         sb.append("""
-
+ 
             --- Safety Guidelines ---
             - Always check file paths before writing
             - Be cautious with shell commands

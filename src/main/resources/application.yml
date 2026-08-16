@@ -167,6 +167,14 @@ uct8086:
     # model: gpt-4o
     # temperature: 0.7
 
+    # ========== Multi-Agent Orchestration ==========
+    # Who holds the orchestration decision rights (maps to OpenHarness Coordinator Mode):
+    #   LOCAL       - single agent; the agent/send_message/task_stop tools are not registered
+    #   COORDINATOR - star topology; only the main agent can spawn sub-agents (default)
+    #   SWARM       - recursive topology; sub-agents may spawn further agents too
+    orchestration:
+      mode: COORDINATOR
+
 # Logging
 logging:
   file:

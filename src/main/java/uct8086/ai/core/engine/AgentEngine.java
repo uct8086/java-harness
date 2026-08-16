@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -38,6 +39,8 @@ import uct8086.ai.common.enums.PermissionMode;
 import uct8086.ai.common.model.AgentMessage;
 import uct8086.ai.common.model.TokenUsage;
 import uct8086.ai.common.model.ToolExecutionContext;
+import uct8086.ai.coordinator.AgentScope;
+import uct8086.ai.coordinator.OrchestrationMode;
 import uct8086.ai.core.config.HarnessProperties;
 import uct8086.ai.core.cost.CostTracker;
 import uct8086.ai.core.permission.PermissionChecker;
@@ -108,12 +111,12 @@ public class AgentEngine {
      * so the model knows what skills are available and can apply them. Skill content
      * is capped per skill to avoid blowing up the prompt token budget.
      */
-    private String buildSystemPrompt(Long userId, String userPrompt, String additionalContext) {
+    private String buildSystemPrompt(Long userId, String userPrompt, String additionalContext, Set<String> excludedTools) {
         String base = (additionalContext != null)
-                ? promptAssembler.buildSystemPrompt(additionalContext)
+                ? promptAssembler.buildSystemPrompt(additionalContext, excludedTools)
                 : (properties.getSystemPrompt() != null
                         ? properties.getSystemPrompt()
-                        : promptAssembler.buildSystemPrompt());
+                        : promptAssembler.buildSystemPrompt(null, excludedTools));
 
         List<String> systemSkills = skillRegistry.getAllContents();
         List<String> userSkills = skillRegistry.listSkills(userId).stream().map(Skill::content).toList();
@@ -248,11 +251,34 @@ public class AgentEngine {
     }
 
     public AgentLoopResult execute(Long userId, String userPrompt, String sessionId) {
-        return executeInternal(userId, userPrompt, sessionId, null);
+        return execute(userId, userPrompt, sessionId, null, AgentScope.MAIN);
     }
 
     public AgentLoopResult execute(Long userId, String userPrompt, String sessionId, String additionalContext) {
-        return executeInternal(userId, userPrompt, sessionId, additionalContext);
+        return execute(userId, userPrompt, sessionId, additionalContext, AgentScope.MAIN);
+    }
+
+    /**
+     * Full entry point with an explicit orchestration scope. Sub-agent runs
+     * (spawned via the 'agent' tool, continued via 'send_message', or dequeued
+     * from the SUBTASK queue) pass {@link AgentScope#SUBAGENT}, which lets the
+     * engine apply the configured {@link OrchestrationMode} topology — e.g.
+     * COORDINATOR hides the orchestration primitives from sub-agents.
+     */
+    public AgentLoopResult execute(Long userId, String userPrompt, String sessionId, String additionalContext, AgentScope scope) {
+        return executeInternal(userId, userPrompt, sessionId, additionalContext, scope);
+    }
+
+    /**
+     * Orchestration primitives hidden from a run, per the configured mode:
+     * LOCAL hides them from everyone; COORDINATOR hides them from sub-agents
+     * (star topology — only the main agent orchestrates); SWARM hides nothing.
+     */
+    private Set<String> orchestrationExcludedTools(AgentScope scope) {
+        OrchestrationMode mode = properties.getOrchestration().getMode();
+        return mode.excludesOrchestrationTools(scope == AgentScope.SUBAGENT)
+                ? OrchestrationMode.ORCHESTRATION_TOOLS
+                : Set.of();
     }
 
     // Bounded thread pool for streaming agent execution (avoids unbounded thread creation).
@@ -298,9 +324,12 @@ public class AgentEngine {
      * {@code ToolCallingChatOptions} at runtime.
      */
     @SuppressWarnings("unchecked")
-    private AgentLoopResult executeInternal(Long userId, String userPrompt, String sessionId, String additionalContext) {
+    private AgentLoopResult executeInternal(Long userId, String userPrompt, String sessionId, String additionalContext, AgentScope scope) {
         // Enforce per-user cost quota BEFORE processing (circuit breaker).
         costTracker.assertQuota(userId);
+
+        // Tools hidden from this run: orchestration primitives, per mode topology.
+        Set<String> excludedTools = orchestrationExcludedTools(scope);
 
         SessionManager.ConversationSession session = (sessionId != null)
                 ? sessionManager.getSession(userId, sessionId).orElseGet(() -> sessionManager.createSession(userId))
@@ -314,7 +343,7 @@ public class AgentEngine {
         ToolExecutionContext context = new ToolExecutionContext(
                 session.id(), workingDir, permissionMode);
 
-        String baseSystemPrompt = buildSystemPrompt(userId, userPrompt, additionalContext);
+        String baseSystemPrompt = buildSystemPrompt(userId, userPrompt, additionalContext, excludedTools);
         final String systemPrompt = enrichWithRag(baseSystemPrompt, userPrompt);
         // Load prior conversation history BEFORE persisting the current turn, so the
         // history injected into the prompt excludes the current user message (which is
@@ -322,10 +351,11 @@ public class AgentEngine {
         List<Message> historyMessages = buildHistoryMessages(userId, session.id());
         sessionManager.addMessage(userId, session.id(), AgentMessage.user(userPrompt));
 
-        ToolCallback[] callbacks = buildToolCallbacks(userId, context);
+        ToolCallback[] callbacks = buildToolCallbacks(userId, context, excludedTools);
         int maxTurns = properties.getMaxTurns();
-        log.info("Starting agent loop for session {} (tools: {}, maxTurns: {})",
-                session.id(), callbacks.length, maxTurns);
+        log.info("Starting agent loop for session {} (scope={}, tools: {}, maxTurns: {}{})",
+                session.id(), scope, callbacks.length, maxTurns,
+                excludedTools.isEmpty() ? "" : ", excluded=" + excludedTools);
 
         long startTime = System.currentTimeMillis();
 
@@ -381,8 +411,8 @@ public class AgentEngine {
             int turns = (turnCounter != null) ? turnCounter[0] : 1;
 
             long elapsed = System.currentTimeMillis() - startTime;
-            log.info("Agent loop finished: {} turns, {} tool calls, {}ms, in={} out={}",
-                    turns, toolCallRecords.size(), elapsed,
+            log.info("Agent loop finished (scope={}): {} turns, {} tool calls, {}ms, in={} out={}",
+                    scope, turns, toolCallRecords.size(), elapsed,
                     usage.inputTokens(), usage.outputTokens());
 
             sessionManager.addMessage(userId, session.id(), AgentMessage.assistant(response));
@@ -413,13 +443,13 @@ public class AgentEngine {
         Path workingDir = Path.of(properties.getWorkingDirectory());
         ToolExecutionContext context = new ToolExecutionContext(session.id(), workingDir, permissionMode);
 
-        String baseSystemPrompt = buildSystemPrompt(userId, userPrompt, null);
+        String baseSystemPrompt = buildSystemPrompt(userId, userPrompt, null, orchestrationExcludedTools(AgentScope.MAIN));
         final String systemPrompt = enrichWithRag(baseSystemPrompt, userPrompt);
         // Load prior history before persisting the current turn (see executeInternal).
         List<Message> historyMessages = buildHistoryMessages(userId, session.id());
         sessionManager.addMessage(userId, session.id(), AgentMessage.user(userPrompt));
 
-        ToolCallback[] callbacks = buildToolCallbacks(userId, context);
+        ToolCallback[] callbacks = buildToolCallbacks(userId, context, orchestrationExcludedTools(AgentScope.MAIN));
         long startTime = System.currentTimeMillis();
 
         // Accumulators for the full response (tokens arrive as deltas).
@@ -526,6 +556,9 @@ public class AgentEngine {
                                     "totalTokens", finalTotal,
                                     "cost", finalCost)));
                     emitter.complete();
+                } catch (IllegalStateException alreadyCompleted) {
+                    // Emitter may have been completed by the error path racing onComplete.
+                    log.warn("Stream emitter already completed when sending 'done' for session {}", session.id());
                 } catch (Exception e) {
                     log.error("Stream completion failed", e);
                     emitter.completeWithError(e);
@@ -537,9 +570,10 @@ public class AgentEngine {
                     emitter.send(SseEmitter.event().name("error")
                             .data(java.util.Map.of("message",
                                     e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())));
-                } catch (Exception ignored) {
+                    emitter.complete();
+                } catch (IllegalStateException | java.io.IOException ignored) {
+                    // Already completed or connection closed; nothing left to do.
                 }
-                emitter.completeWithError(e);
             }).subscribe();
 
         } catch (Exception e) {
@@ -555,11 +589,13 @@ public class AgentEngine {
         }
     }
 
-    private ToolCallback[] buildToolCallbacks(Long userId, ToolExecutionContext context) {
+    private ToolCallback[] buildToolCallbacks(Long userId, ToolExecutionContext context, Set<String> excludedTools) {
         List<ToolCallback> callbacks = new ArrayList<>();
 
-        // 1. Custom HarnessTools (via ToolRegistry)
+        // 1. Custom HarnessTools (via ToolRegistry), minus the ones excluded for
+        //    this run (orchestration primitives, per the configured mode)
         toolRegistry.getAll().stream()
+                .filter(tool -> !excludedTools.contains(tool.getName()))
                 .map(tool -> (ToolCallback) new HarnessToolCallbackAdapter(tool, toolExecutionService, context))
                 .forEach(callbacks::add);
 

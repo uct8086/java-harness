@@ -1,5 +1,6 @@
 package uct8086.ai.core.config;
 
+import uct8086.ai.coordinator.OrchestrationMode;
 import uct8086.ai.core.tool.HarnessTool;
 import uct8086.ai.core.tool.ToolRegistry;
 import uct8086.ai.skills.Skill;
@@ -37,8 +38,15 @@ public class HarnessCoreAutoConfiguration {
 
     @PostConstruct
     public void registerTools() {
-        log.info("Registering {} harness tools...", tools.size());
+        OrchestrationMode mode = properties.getOrchestration().getMode();
+        boolean localMode = mode.excludesOrchestrationTools(false);
+        log.info("Registering {} harness tools (orchestration mode: {})...", tools.size(), mode);
         for (HarnessTool tool : tools) {
+            // LOCAL mode: the orchestration primitives stay out of the registry
+            // entirely, so they never show up in prompts or tool callbacks.
+            if (localMode && OrchestrationMode.ORCHESTRATION_TOOLS.contains(tool.getName())) {
+                continue;
+            }
             toolRegistry.register(tool);
         }
         log.info("Harness tools registered: {}", toolRegistry.getToolNames());
