@@ -92,7 +92,7 @@ async function sendStream(text, assistantMsg) {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => {
     controller.abort()
-  }, 6 * 60 * 1000) // 6 min hard timeout (slightly above server's 5 min)
+  }, 30 * 60 * 1000) // 30 min hard timeout (aligned with server's SseEmitter 30 min)
 
   const resp = await fetch('/api/chat/stream', {
     method: 'POST',

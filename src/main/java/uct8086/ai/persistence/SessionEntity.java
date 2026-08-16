@@ -32,4 +32,8 @@ public class SessionEntity {
 
     @TableField("message_count")
     private int messageCount;
+
+    /** Internal sessions (sub-agent sessions spawned by orchestration tools) are hidden from the session list. */
+    @TableField("internal")
+    private Boolean internal;
 }

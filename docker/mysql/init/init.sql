@@ -20,10 +20,13 @@ CREATE TABLE IF NOT EXISTS `harness_session` (
     `created_at`    DATETIME(3)  NULL COMMENT '创建时间',
     `updated_at`    DATETIME(3)  NULL COMMENT '更新时间',
     `message_count` INT          NOT NULL DEFAULT 0 COMMENT '消息数量',
+    `internal`      TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '内部会话(子代理派生,会话列表不显示)',
     PRIMARY KEY (`id`),
     KEY `idx_user_id` (`user_id`),
     KEY `idx_updated_at` (`updated_at`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci COMMENT = 'AI会话表';
+
+-- 已有库升级：执行 migration_add_internal.sql（添加 internal 列）
 
 -- ------------------------------------------------------------
 -- 2. 会话消息表

@@ -75,6 +75,23 @@ public class SessionManager {
      * Create a new session for the given user.
      */
     public ConversationSession createSession(Long userId, String name) {
+        return createSession(userId, name, false);
+    }
+
+    /**
+     * Create a new unnamed session for the given user.
+     */
+    public ConversationSession createSession(Long userId) {
+        return createSession(userId, "session-" + UUID.randomUUID().toString().substring(0, 8), false);
+    }
+
+    /**
+     * Create a new session, optionally marked internal. Internal sessions are
+     * sub-agent sessions spawned by orchestration tools ({@code agent}): they are
+     * persisted normally (messages, history) but excluded from the session list —
+     * they skip the Redis ZSET/meta caches and DB list queries filter them out.
+     */
+    public ConversationSession createSession(Long userId, String name, boolean internal) {
         String id = UUID.randomUUID().toString();
         LocalDateTime now = LocalDateTime.now();
         SessionEntity entity = new SessionEntity();
@@ -84,17 +101,13 @@ public class SessionManager {
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
         entity.setMessageCount(0);
+        entity.setInternal(internal);
         sessionMapper.insert(entity);
-        updateZsetAndMeta(userId, entity);
-        log.info("Created session: {} ({}) for user {}", name, id, userId);
+        if (!internal) {
+            updateZsetAndMeta(userId, entity);
+        }
+        log.info("Created session: {} ({}) for user {} (internal={})", name, id, userId, internal);
         return toConversationSession(entity);
-    }
-
-    /**
-     * Create a new unnamed session for the given user.
-     */
-    public ConversationSession createSession(Long userId) {
-        return createSession(userId, "session-" + UUID.randomUUID().toString().substring(0, 8));
     }
 
     /**
@@ -106,6 +119,18 @@ public class SessionManager {
             return Optional.empty();
         }
         return Optional.of(toConversationSession(entity));
+    }
+
+    /**
+     * Resolve the owning user id for a session id.
+     * Used by agent tools that only have the session id from the execution context.
+     */
+    public Optional<Long> resolveUserId(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return Optional.empty();
+        }
+        SessionEntity entity = sessionMapper.selectById(sessionId);
+        return entity == null ? Optional.empty() : Optional.ofNullable(entity.getUserId());
     }
 
     /**
@@ -272,6 +297,10 @@ public class SessionManager {
 
     /** Update (or insert) the ZSET score and per-session meta for the given entity. */
     private void updateZsetAndMeta(Long userId, SessionEntity entity) {
+        // Internal (sub-agent) sessions never enter the session list caches.
+        if (Boolean.TRUE.equals(entity.getInternal())) {
+            return;
+        }
         try {
             double score = toEpochMilli(entity.getUpdatedAt());
             redisTemplate.opsForZSet().add(zsetKey(userId), entity.getId(), score);

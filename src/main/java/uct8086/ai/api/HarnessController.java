@@ -134,8 +134,10 @@ public class HarnessController {
             }
             return unauthorized;
         }
-        // Timeout: 5 minutes (agent loop can be long with multiple turns)
-        SseEmitter emitter = new SseEmitter(5 * 60 * 1000L);
+        // Timeout: 30 minutes. Multi-agent orchestration can run long:
+        // parallel sub-agents (each a full agent loop) + result-collection turns
+        // can exceed 8 minutes in practice.
+        SseEmitter emitter = new SseEmitter(30 * 60 * 1000L);
         agentEngine.executeStream(userId, request.prompt(), request.sessionId(), emitter);
         return emitter;
     }
