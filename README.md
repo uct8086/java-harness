@@ -19,7 +19,7 @@ UCT8086-AI（Open Agent Harness）是一个用 Java 技术栈实现的 AI Agent 
 | **Memory System** | 跨会话记忆，**MySQL 持久化 + 系统自动总结 + pgvector 相关检索** |
 | **Session Management** | 会话创建、恢复、历史记录（Redis ZSET + meta 缓存），消息缓存限 100 条 |
 | **Cost Tracking** | Token 用量与成本追踪（MySQL `cost_usage` 明细），**按用户配额熔断** |
-| **Multi-Agent Coordination** | 占位实现（未启用）：仅保留子 Agent / 团队骨架，`spawnSubagent` 不真正调用模型，暂无对外 API |
+| **Multi-Agent Coordination** | LLM 驱动的动态 Agent 编排：`agent`/`send_message`/`task_stop` 三原语 + LOCAL/COORDINATOR/SWARM 拓扑约束 + Redis Stream 分布式派发 |
 | **RAG Knowledge Base** | 基于 pgvector + Ollama 的语义检索，与记忆按 userId/type 隔离 |
 | **MCP Client** | Model Context Protocol 客户端集成（Streamable HTTP，超时 + 自动连接） |
 | **Metrics** | Actuator + Prometheus 指标（请求、Token、耗时） |
