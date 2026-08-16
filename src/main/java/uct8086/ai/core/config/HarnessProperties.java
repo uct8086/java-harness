@@ -61,6 +61,19 @@ public class HarnessProperties {
     @Getter
     private final Orchestration orchestration = new Orchestration();
 
+    // ========== Command sandbox (allow-list) ==========
+
+    /** Whether to enforce a command allow-list for shell tools (e.g. bash). When enabled,
+     *  only commands whose first token (executable name) is in {@link #commandAllowlist}
+     *  are permitted; everything else is denied before the dangerous-command checks. */
+    @Getter
+    private boolean commandAllowlistEnabled = false;
+
+    /** Comma-separated allow-list of executable names permitted for shell tools.
+     *  Only consulted when {@link #commandAllowlistEnabled} is true. */
+    @Getter
+    private String commandAllowlist = "";
+
     /** Temperature for the model */
     @Getter
     private double temperature = 0.7;

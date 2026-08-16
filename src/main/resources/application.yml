@@ -111,6 +111,14 @@ uct8086:
     # Permission mode: DEFAULT, AUTO, PLAN_MODE, READ_ONLY
     permission-mode: DEFAULT
 
+    # Command allow-list for shell tools (dual-track with the dangerous-command blacklist).
+    # When enabled, only commands whose executable name (first token) is listed below
+    # may run; the blacklist still applies to their arguments afterward.
+    #   command-allowlist-enabled: true
+    #   command-allowlist: ls,cat,grep,head,tail,find,echo,pwd,python,python3,node,npm,git,mvn,java,curl,wget
+    command-allowlist-enabled: true
+    command-allowlist: ls,cat,grep,head,tail,find,echo,pwd,python,python3,node,npm,git,mvn,java,curl,wget
+
     # Maximum agent loop iterations
     max-turns: 50
 

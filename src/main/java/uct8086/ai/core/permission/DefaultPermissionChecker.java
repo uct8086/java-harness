@@ -40,6 +40,7 @@ public class DefaultPermissionChecker implements PermissionChecker {
     private final AtomicReference<PermissionMode> defaultMode;
     private final List<PathRule> pathRules = new CopyOnWriteArrayList<>();
     private final List<String> deniedCommands = new CopyOnWriteArrayList<>();
+    private final HarnessProperties properties;
 
     /**
      * Commands that are always denied for safety. Matching is done on a normalized
@@ -89,6 +90,7 @@ public class DefaultPermissionChecker implements PermissionChecker {
     );
 
     public DefaultPermissionChecker(HarnessProperties properties) {
+        this.properties = properties;
         // Seed the default mode from configuration (uct8086.ai.permission-mode),
         // falling back to DEFAULT when not configured.
         PermissionMode configured = properties.getPermissionMode();
@@ -140,6 +142,15 @@ public class DefaultPermissionChecker implements PermissionChecker {
                 String value = entry.getValue() != null ? entry.getValue().toString() : "";
                 if (value.isBlank()) {
                     continue;
+                }
+
+                // Command allow-list (optional): when enabled, the executable name
+                // (first token) must be in the configured allow-list, otherwise the
+                // command is rejected outright. This runs BEFORE the dangerous-command
+                // checks so that unknown executables never reach them.
+                String allowlistDenied = checkCommandAllowlist(value);
+                if (allowlistDenied != null) {
+                    return PermissionResult.denied(allowlistDenied);
                 }
 
                 String denied = detectDangerousCommand(value);
@@ -201,6 +212,79 @@ public class DefaultPermissionChecker implements PermissionChecker {
      */
     private static String normalize(String value) {
         return value == null ? "" : value.trim().replaceAll("\\s+", " ").toLowerCase();
+    }
+
+    /**
+     * When the command allow-list is enabled, extract the command's executable name
+     * (the first whitespace-delimited token, with a leading path stripped) and verify
+     * it is present in the configured allow-list.
+     *
+     * <p>Returns a denial reason when the command should be blocked, or {@code null}
+     * when it is permitted (allow-list disabled, empty command, or name is listed).
+     *
+     * <p>This is the "allow" half of the dual-track policy: it constrains <em>which
+     * executables</em> may run, while the existing dangerous-command checks below
+     * constrain <em>which arguments</em> are tolerated for allowed executables.
+     */
+    private String checkCommandAllowlist(String value) {
+        if (!properties.isCommandAllowlistEnabled()) {
+            return null;
+        }
+        Set<String> allowed = parseAllowlist(properties.getCommandAllowlist());
+        if (allowed.isEmpty()) {
+            // Allow-list enabled but empty: deny everything (fail closed).
+            return "Command allow-list is enabled but empty (fail closed)";
+        }
+
+        String executable = extractExecutable(value);
+        if (executable.isEmpty()) {
+            return "Command has no executable name";
+        }
+        if (!allowed.contains(executable)) {
+            return "Command not in allow-list: " + executable;
+        }
+        return null;
+    }
+
+    /**
+     * Parse a comma-separated allow-list string into a normalized set of lowercase
+     * executable names (trimmed, empty entries dropped).
+     */
+    private static Set<String> parseAllowlist(String csv) {
+        Set<String> result = new java.util.LinkedHashSet<>();
+        if (csv == null || csv.isBlank()) {
+            return result;
+        }
+        for (String token : csv.split(",")) {
+            String name = token.trim().toLowerCase();
+            if (!name.isEmpty()) {
+                result.add(name);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Extract the executable name (first token) from a command string. Strips a
+     * leading {@code ./} or path prefix, and lower-cases it, so that {@code ./run.sh},
+     * {@code /usr/bin/python3} and {@code PYTHON} all normalize to their basename.
+     *
+     * <p>Note: this operates on the first token only; operators like {@code &&} or
+     * {@code ;} that chain additional commands are handled by the dangerous-command
+     * checks below (which reject chaining outright).
+     */
+    private static String extractExecutable(String value) {
+        String normalized = normalize(value);
+        if (normalized.isEmpty()) {
+            return "";
+        }
+        String firstToken = normalized.split("\\s+")[0];
+        // strip a directory prefix (e.g. "/usr/bin/python3" -> "python3", "./script" -> "script")
+        int slash = firstToken.lastIndexOf('/');
+        if (slash >= 0 && slash < firstToken.length() - 1) {
+            firstToken = firstToken.substring(slash + 1);
+        }
+        return firstToken;
     }
 
     /**
