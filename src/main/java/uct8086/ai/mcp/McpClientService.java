@@ -80,7 +80,7 @@ public class McpClientService {
                         boolean hasTools = liveTools.stream()
                                 .anyMatch(t -> t.getToolDefinition().name()
                                         .toLowerCase().contains(c.name().toLowerCase()));
-                        info.put("status", hasTools || errors.isEmpty() ? "connected" : "connected");
+                        info.put("status", "connected");
                     } else {
                         info.put("status", c.enabled() ? "connecting" : "disconnected");
                     }
