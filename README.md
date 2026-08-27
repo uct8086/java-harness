@@ -1,98 +1,96 @@
 # UCT8086-AI: Open Agent Harness
 
-> 基于 Java 21 + Spring Boot 4.0 + Spring AI 2.0 构建的 AI Agent Harness 基础设施，提供完整的 Agent 工程化能力。
+> A production-grade AI Agent infrastructure built with **Java 21 + Spring Boot 4.0 + Spring AI 2.0**, providing a complete Agent engineering toolkit.
 
-## 项目简介
+## Overview
 
-UCT8086-AI（Open Agent Harness）是一个用 Java 技术栈实现的 AI Agent 管理框架，目标是提供类似 OpenHarness 的全套 Harness 流程管控能力，涵盖工具管理、权限控制、Hook 机制、Agent 引擎、Prompt 组装、会话管理、成本追踪等完整 AI 工程化能力。
+UCT8086-AI (Open Agent Harness) is an AI Agent management framework implemented in the Java stack. It delivers the full Harness workflow-governance pipeline inspired by OpenHarness — covering tool management, permission control, hook mechanisms, an Agent engine, prompt assembly, session management, cost tracking, and more — as a cohesive AI engineering platform.
 
-### 核心能力
+### Core Capabilities
 
-| 能力 | 说明 |
-|------|------|
-| **Agent Loop** | 查询 → 模型调用 → 工具执行 → 结果回传 → 循环直到完成，支持 **SSE 流式** token 级输出 |
-| **Authentication / Authorization** | Spring Security + Cookie Token 登录，用户/角色（ROLE_USER/ROLE_ADMIN），**全功能按用户隔离** |
-| **Tool Registry** | 工具注册、发现、分类管理，支持动态注册插件和 MCP 工具 |
-| **Permission System** | 四级安全模式（DEFAULT / AUTO / PLAN_MODE / READ_ONLY），路径级规则控制，危险命令拦截 |
-| **Hook System** | PreToolUse / PostToolUse 生命周期钩子，支持阻止执行或修改结果 |
-| **Skill System** | 系统技能（代码目录 Markdown）+ 用户技能（MySQL `harness_skill` 表） |
-| **Memory System** | 跨会话记忆，**MySQL 持久化 + 系统自动总结 + pgvector 相关检索** |
-| **Session Management** | 会话创建、恢复、历史记录（Redis ZSET + meta 缓存），消息缓存限 100 条 |
-| **Cost Tracking** | Token 用量与成本追踪（MySQL `cost_usage` 明细），**按用户配额熔断** |
-| **Multi-Agent Coordination** | LLM 驱动的动态 Agent 编排：`agent`/`send_message`/`task_stop` 三原语 + LOCAL/COORDINATOR/SWARM 拓扑约束 + Redis Stream 分布式派发 |
-| **RAG Knowledge Base** | 基于 pgvector + Ollama 的语义检索，与记忆按 userId/type 隔离 |
-| **MCP Client** | Model Context Protocol 客户端集成（Streamable HTTP，超时 + 自动连接） |
-| **Metrics** | Actuator + Prometheus 指标（请求、Token、耗时） |
-| **REST API** | 全功能 HTTP API，暴露所有子系统 |
+| Capability | Description |
+|-----------|-------------|
+| **Agent Loop** | Query → model call → tool execution → result loopback → iterate until done, with **SSE streaming** token-level output |
+| **Authentication / Authorization** | Spring Security + Cookie Token login, user/role model (ROLE_USER/ROLE_ADMIN), **full per-user isolation** |
+| **Tool Registry** | Tool registration, discovery, categorization; dynamic plugin and MCP tool registration |
+| **Permission System** | Four security modes (DEFAULT / AUTO / PLAN_MODE / READ_ONLY), path-level rules, dangerous-command interception |
+| **Hook System** | PreToolUse / PostToolUse lifecycle hooks; can block execution or mutate results |
+| **Skill System** | System skills (Markdown in project dir) + user skills (MySQL `harness_skill` table) |
+| **Memory System** | Cross-session memory: **MySQL persistence + auto-summarization + pgvector relevance retrieval** |
+| **Session Management** | Session create/resume/history (Redis ZSET + meta cache), 100-message cache cap |
+| **Cost Tracking** | Token usage & cost tracking (MySQL `cost_usage` ledger), **per-user quota circuit breaker** |
+| **Multi-Agent Coordination** | LLM-driven dynamic agent orchestration: `agent`/`send_message`/`task_stop` primitives + LOCAL/COORDINATOR/SWARM topology + Redis Stream distributed dispatch |
+| **RAG Knowledge Base** | Semantic retrieval via pgvector + Ollama, isolated by userId/type |
+| **MCP Client** | Model Context Protocol client integration (Streamable HTTP, timeout + auto-connect) |
+| **Metrics** | Actuator + Prometheus metrics (requests, tokens, latency) |
+| **REST API** | Full-featured HTTP API exposing all subsystems |
 
-## 技术栈
+## Tech Stack
 
-| 组件 | 版本 |
-|------|------|
+| Component | Version |
+|-----------|---------|
 | Java | 21 |
 | Spring Boot | 4.0.0 |
 | Spring AI | 2.0.0 |
-| Spring Security | 7.x（认证授权） |
-| MyBatis-Plus | 3.5.x（`mybatis-plus-spring-boot4-starter`） |
-| MySQL | 8.0（会话/消息/记忆/技能/成本/用户角色持久化） |
-| Redis | 7.x（会话缓存、Task Stream、熔断标记） |
-| PostgreSQL + pgvector | 17（向量存储：知识库 + 记忆） |
-| Ollama | `bge-m3` 模型（本地 Embedding） |
-| Micrometer + Prometheus | Actuator 指标 |
-| 构建工具 | Maven |
+| Spring Security | 7.x (authn/authz) |
+| MyBatis-Plus | 3.5.x (`mybatis-plus-spring-boot4-starter`) |
+| MySQL | 8.0 (sessions/messages/memory/skills/cost/user-role persistence) |
+| Redis | 7.x (session cache, task stream, breaker flags) |
+| PostgreSQL + pgvector | 17 (vector store: knowledge base + memory) |
+| Ollama | `bge-m3` model (local embedding) |
+| Micrometer + Prometheus | Actuator metrics |
+| Build tool | Maven |
 
-## 模块结构
+## Module Structure
 
 ```
 uct8086-ai/
-├── pom.xml                          # 父 POM（模块管理 + 依赖版本）
-├── common/                   # 公共模块：枚举、模型、异常
-├── auth/                     # 认证授权：实体、Mapper、Service、Controller、Security 配置
-├── persistence/              # 持久化：会话/消息 Entity + Mapper（MyBatis-Plus）
-├── core/                     # 核心模块：Agent 引擎、工具、权限、Hook、会话、成本、Prompt
-├── skills/                   # 技能模块：系统技能加载 + 用户技能（MySQL）
-├── memory/                   # 记忆模块：MySQL 存储 + 向量检索 + 自动总结
-├── tasks/                    # 任务模块：Redis Stream 分布式任务
-├── coordinator/              # 协调模块：多 Agent 协作
-├── mcp/                      # MCP 模块：Model Context Protocol 客户端
-├── metrics/                  # 指标：ChatMetrics（Actuator/Prometheus）
-├── config/                   # 配置：RedisConfig、PgVectorConfig 等
-├── api/                      # REST API：HarnessController、全局异常处理
-└── web/                      # 前端模块：Vue 3 + Vite Web UI
+├── pom.xml                  # Parent POM (module management + dependency versions)
+├── common/                  # Shared: enums, models, exceptions
+├── auth/                    # Auth: entities, mappers, services, controllers, security config
+├── persistence/             # Persistence: session/message entities + mappers (MyBatis-Plus)
+├── core/                    # Core: Agent engine, tools, permission, hooks, session, cost, prompt
+├── skills/                  # Skills: system skill loading + user skills (MySQL)
+├── memory/                  # Memory: MySQL storage + vector retrieval + auto-summarization
+├── tasks/                   # Tasks: Redis Stream distributed tasks
+├── coordinator/             # Coordinator: multi-agent collaboration
+├── mcp/                     # MCP: Model Context Protocol client
+├── metrics/                 # Metrics: ChatMetrics (Actuator/Prometheus)
+├── config/                  # Config: RedisConfig, PgVectorConfig, etc.
+├── api/                     # REST API: HarnessController, global exception handling
+└── web/                     # Frontend: Vue 3 + Vite Web UI
 ```
 
+## Architecture
 
-## 架构设计
-
-### Agent Loop 流程
+### Agent Loop
 
 ```
-用户输入 Prompt
+User input Prompt
       │
       ▼
 ┌─────────────────────────────┐
-│  buildSystemPrompt (AgentEngine)  │  组装上下文：基础系统提示 + 系统/用户技能
-│                                  │  + 相关记忆（pgvector 检索 top5）+ RAG 文档
+│  buildSystemPrompt (AgentEngine)  │  Assemble context: base system prompt + system/user skills
+│                                  │  + relevant memory (pgvector top-5) + RAG documents
 └──────┬───────────────────────┘
        │
        ▼
 ┌─────────────┐
-│ SessionManager │  读取最近 10 条历史消息（Redis 消息缓存，限 100 条）
+│ SessionManager │  Read last 10 history messages (Redis message cache, 100 cap)
 └──────┬──────┘
        │
        ▼
 ┌─────────────┐
-│  ChatClient  │  调用 Spring AI ChatClient，携带历史消息 + ToolCallback
+│  ChatClient  │  Call Spring AI ChatClient with history + ToolCallback
 │  (Spring AI) │
 └──────┬──────┘
-       │
-       ▼ (模型请求工具调用)
+       │ (model requests a tool call)
 ┌──────────────────────────────────────────┐
-│        HarnessToolCallbackAdapter         │  适配 HarnessTool → Spring AI ToolCallback
+│        HarnessToolCallbackAdapter         │  Adapts HarnessTool → Spring AI ToolCallback
 │                    │                      │
 │        ┌───────────▼──────────┐           │
 │        │ ToolExecutionService  │           │
-│        │    (执行管线)          │           │
+│        │    (execution pipeline)│          │
 │        │  1. Permission Check  │           │
 │        │  2. PreToolUse Hook   │           │
 │        │  3. Execute Tool      │           │
@@ -102,163 +100,122 @@ uct8086-ai/
        │
        ▼
 ┌─────────────┐
-│ CostTracker  │  记录 Token 用量
+│ CostTracker  │  Record token usage
 └─────────────┘
        │
        ▼
-   返回结果
+   Return result
 ```
 
-### 工具执行管线
+### Tool Execution Pipeline
 
-每次工具调用都会经过完整的管线：
+Every tool call passes through a full pipeline:
 
-1. **Permission Check** — 检查权限模式、路径规则、危险命令
-2. **PreToolUse Hook** — 执行前置钩子，可阻止执行
-3. **Execute Tool** — 执行工具逻辑
-4. **PostToolUse Hook** — 执行后置钩子，可修改结果
+1. **Permission Check** — checks permission mode, path rules, dangerous commands
+2. **PreToolUse Hook** — pre-execution hook, can block execution
+3. **Execute Tool** — runs the tool logic
+4. **PostToolUse Hook** — post-execution hook, can mutate the result
 
-### 权限模式
+### Permission Modes
 
-| 模式 | 行为 |
-|------|------|
-| `DEFAULT` | 危险命令拦截 + 路径规则（写操作审批机制待实现） |
-| `AUTO` | 自动允许所有操作（沙箱环境） |
-| `PLAN_MODE` | 阻止所有写操作（审查模式） |
-| `READ_ONLY` | 仅允许只读操作 |
+| Mode | Behavior |
+|------|----------|
+| `DEFAULT` | Dangerous-command interception + path rules (write approval mechanism pending) |
+| `AUTO` | Auto-allow all operations (sandboxed environment) |
+| `PLAN_MODE` | Block all write operations (review mode) |
+| `READ_ONLY` | Read-only operations only |
 
-> **注意**：当前 `DEFAULT` 模式下，危险命令检测仅对 `bash`（SHELL 类）工具生效，文件工具内容不会被误判。写操作的「用户确认审批」机制尚未实现（`askUser` 为 TODO），属已知待办。
+### RAG Knowledge Base
 
-### RAG 知识库
-
-项目集成了基于 **pgvector + Ollama** 的 RAG（检索增强生成）能力，在每次 Agent 调用前自动从知识库检索相关文档注入到系统 Prompt 中。
+The project integrates RAG (Retrieval-Augmented Generation) powered by **pgvector + Ollama**, automatically retrieving relevant documents and injecting them into the system prompt before every agent call.
 
 ```
-用户 Prompt
+User Prompt
     │
     ▼
 AgentEngine.enrichWithRag()
     │
-    ├──→ Ollama bge-m3 (本地 Embedding) ──→ 将 Prompt 转为 1024 维向量
+    ├──→ Ollama bge-m3 (local embedding) ──→ 1024-dim vector
     │
-    ├──→ PgVectorStore.similaritySearch() ──→ PostgreSQL + pgvector 余弦相似度搜索
-    │
-    ▼
-系统 Prompt + "\n\n## Relevant Documents\n" + 检索到的文档
+    ├──→ PgVectorStore.similaritySearch() ──→ PostgreSQL + pgvector cosine similarity
     │
     ▼
-DeepSeek Chat API（生成回答）
+System Prompt + "\n\n## Relevant Documents\n" + retrieved docs
+    │
+    ▼
+DeepSeek Chat API (generation)
 ```
 
-**架构说明：**
+| Component | Role | Notes |
+|-----------|------|-------|
+| **DeepSeek API** | Chat | Dialogue generation (OpenAI-compatible; DeepSeek has no embedding API) |
+| **Ollama `bge-m3`** | Embedding | Local 1024-dim vectors; free; data stays on-prem |
+| **PostgreSQL + pgvector** | Vector store | Cosine similarity + HNSW index |
 
-| 组件 | 角色 | 说明 |
-|------|------|------|
-| **DeepSeek API** | Chat | 对话生成（OpenAI 兼容协议，DeepSeek 不支持 Embedding） |
-| **Ollama `bge-m3`** | Embedding | 本地运行，将文本转为 1024 维向量，免费、数据不出内网 |
-| **PostgreSQL + pgvector** | 向量存储 | 存储知识库文档向量，支持余弦相似度搜索和 HNSW 索引 |
+> **Memory retrieval also uses pgvector**: long-term memories (`harness_memory` table) are embedded to the same pgvector store on write; retrieval filters by `metadata.type=memory` + `metadata.userId` to isolate from knowledge-base docs, injecting only the current user's relevant memories (top-5).
 
-**为什么不直接用 DeepSeek 做 Embedding？** DeepSeek 专注对话/推理模型，不提供 Embedding API。Ollama 本地补位，无需额外购买 API Key。
+### Built-in Tools
 
-> **记忆检索同样走 pgvector**：用户的长期记忆（`harness_memory` 表）在写入时也同步 embedding 到同一个 pgvector，检索时通过 `metadata.type=memory` + `metadata.userId` 与知识库文档隔离，只注入当前用户的相关记忆（top-5）。
+| Tool | Category | Read-only | Description |
+|------|----------|-----------|-------------|
+| `bash` | SHELL | No | Execute shell commands with timeout control |
+| `read_file` | FILE_IO | Yes | Read file contents with path resolution & truncation |
+| `write_file` | FILE_IO | No | Write files, append mode supported |
+| `glob` | FILE_IO | Yes | Find files by glob pattern |
+| `grep` | SEARCH | Yes | Regex search over file contents |
 
-### 内置工具
+## Quick Start
 
-| 工具名 | 类别 | 只读 | 说明 |
-|--------|------|------|------|
-| `bash` | SHELL | 否 | 执行 Shell 命令，支持超时控制 |
-| `read_file` | FILE_IO | 是 | 读取文件内容，支持路径解析和截断 |
-| `write_file` | FILE_IO | 否 | 写入文件，支持追加模式 |
-| `glob` | FILE_IO | 是 | 按 Glob 模式查找文件 |
-| `grep` | SEARCH | 是 | 正则搜索文件内容 |
-
-## 快速开始
-
-### 环境要求
+### Prerequisites
 
 - JDK 21+
 - Maven 3.8+
-- MySQL 8.x（外部实例 `10.94.77.17:3506`，会话/消息持久化）
-- Redis 7.x（会话缓存）
-- PostgreSQL 16+ + pgvector 扩展（向量存储）
-- Ollama（本地 Embedding 模型）
+- MySQL 8.x (external instance `10.94.77.17:3506`, sessions/messages persistence)
+- Redis 7.x (session cache)
+- PostgreSQL 16+ with pgvector extension (vector store)
+- Ollama (local embedding model)
 
-### 安装依赖服务
+### Install Dependency Services
 
-项目根目录提供了 `docker-compose.yml`，一键启动 Redis、PostgreSQL+pgvector（MySQL 使用外部实例，不包含在内）：
+The root `docker-compose.yml` starts Redis and PostgreSQL+pgvector (MySQL uses an external instance, not managed here):
 
 ```powershell
-# 启动所有服务（后台运行）
-docker compose up -d
-
-# 查看服务状态
-docker compose ps
-
-# 查看日志
-docker compose logs -f
-
-# 停止服务
-docker compose down
-
-# 停止并清理数据卷（重置数据库）
-docker compose down -v
+docker compose up -d        # start
+docker compose ps           # status
+docker compose logs -f      # logs
+docker compose down         # stop
+docker compose down -v      # stop + wipe data volumes
 ```
 
-各服务端口与凭证（与 `application.yml` 默认值一致）：
-
-| 服务 | 端口 | 用户名 | 密码 |
-|------|------|--------|------|
-| Redis 7 | 6379 | — | 无 |
+| Service | Port | Username | Password |
+|---------|------|----------|----------|
+| Redis 7 | 6379 | — | none |
 | PostgreSQL 17 + pgvector | 5432 | postgres | 321432 |
 
-> **说明：** MySQL 使用外部实例 `10.94.77.17:3506`（user: `root`，password: `root.2026`），不在 Docker Compose 中管理。数据库 `uct8086_ai` 需预先创建，表结构通过手动执行 `docker/mysql/init/init.sql` 创建（应用启动不再自动建表）。
-> PostgreSQL 的 `vector`、`hstore`、`uuid-ossp` 扩展由 `docker/postgres/init/01-extensions.sql` 自动安装。
-> `vector_store` 表由 `PgVectorStore` 启动时自动创建（1024 维）。
-
-**MySQL 数据库初始化（手动执行一次）：**
+**MySQL initialization (run once, manually):**
 
 ```bash
-# 1. 创建数据库（如尚未创建）
 mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS uct8086_ai DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-
-# 2. 执行建表脚本（幂等，可重复执行）
 mysql -u root -p uct8086_ai < docker/mysql/init/init.sql
 ```
 
-脚本会创建以下表，并初始化默认角色（`ROLE_USER`/`ROLE_ADMIN`）与默认管理员账号 **`admin / admin123`**（首次部署后请尽快修改密码）：
+**Ollama** (local embedding, install separately):
 
-- `auth_user`、`auth_role`、`auth_user_role` — 用户、角色及关联
-- `harness_session`、`harness_message` — 会话与消息
-- `harness_memory` — 用户长期记忆（MySQL 真相源）
-- `cost_usage` — 成本使用明细（配额熔断依据）
-- `harness_skill` — 用户自定义技能
-
-**4. Ollama**（本地 Embedding，需单独安装）：
 ```bash
-# 下载安装：https://ollama.com/download/windows
-# 拉取中文 Embedding 模型（约 1.2GB）
-ollama pull bge-m3
+# Download: https://ollama.com/download/windows
+ollama pull bge-m3   # ~1.2GB Chinese embedding model
 ```
-默认运行在 `localhost:11434`，无需额外配置。
 
-### 构建项目
+### Build
 
 ```bash
-# 设置 JAVA_HOME 指向 JDK 21
-export JAVA_HOME=/path/to/jdk-21
-
-# 编译所有模块
 mvn clean compile
-
-# 打包
 mvn clean package -DskipTests
 ```
 
-### 配置
+### Configuration
 
-API Key 通过环境变量注入，不硬编码在配置文件中（不会被提交到版本库）。
-
-**方式一：直接设环境变量**（推荐，避免每次输入）
+API keys are injected via environment variables (never hardcoded, never committed):
 
 ```powershell
 # PowerShell
@@ -270,160 +227,69 @@ $env:SPRING_AI_OPENAI_API_KEY="sk-your-deepseek-key"
 export SPRING_AI_OPENAI_API_KEY=sk-your-deepseek-key
 ```
 
-**方式二：IntelliJ 启动配置中设置**
-
-Run/Debug Configuration → Environment variables → 添加：
-```
-SPRING_AI_OPENAI_API_KEY=sk-your-deepseek-key
-```
-
-**application.yml 中的引用（无需修改）：**
-
-```yaml
-spring:
-  ai:
-    # Chat: DeepSeek (OpenAI 兼容协议)
-    openai:
-      api-key: ${SPRING_AI_OPENAI_API_KEY:}
-      base-url: https://api.deepseek.com
-      chat:
-        options:
-          model: deepseek-v4-pro
-          temperature: 0.7
-      embedding:
-        enabled: false              # DeepSeek 不支持 Embedding API
-
-    # Embedding: 本地 Ollama
-    ollama:
-      embedding:
-        enabled: true
-        options:
-          model: bge-m3             # 1024 维中文 Embedding 模型
-      chat:
-        enabled: false              # Chat 只用 DeepSeek
-
-  # 排除 PgVectorStore 自动配置（手动创建，用独立 PostgreSQL 数据源）
-  autoconfigure:
-    exclude:
-      - org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration
-
-# pgvector 数据源（独立于 MySQL 主数据源）
-pgvector:
-  datasource:
-    url: jdbc:postgresql://${PGVECTOR_HOST:localhost}:5432/${PGVECTOR_DB:postgres}
-    username: ${PGVECTOR_USER:postgres}
-    password: ${PGVECTOR_PASSWORD:321432}
-
-uct8086:
-  ai:
-    permission-mode: DEFAULT
-    max-turns: 50
-    working-directory: ${user.dir}
-```
-
-### 运行
+### Run
 
 ```powershell
-# PowerShell — 设置 Key 并启动
-$env:SPRING_AI_OPENAI_API_KEY="sk-your-deepseek-key"
-mvn spring-boot:run
-
-# 或一行搞定
 $env:SPRING_AI_OPENAI_API_KEY="sk-your-deepseek-key"; mvn spring-boot:run
 ```
 
-```bash
-# Linux / macOS / Git Bash
-SPRING_AI_OPENAI_API_KEY=sk-your-deepseek-key mvn spring-boot:run
-```
+The REST API is available at `http://localhost:9081`. See [docs/web-frontend.md](./docs/web-frontend.md) for the Vue 3 frontend.
 
-应用启动后，REST API 在 `http://localhost:9081` 可用。
+## Extension Development
 
-> **Web 前端**：`web/` 目录的 Vue 3 前端项目（页面、启动、构建）详见 [docs/web-frontend.md](./docs/web-frontend.md)。
-
-
-## 扩展开发
-
-### 自定义工具
-
-实现 `HarnessTool` 接口或继承 `AbstractTool`，并注册为 Spring Bean：
+### Custom Tool
 
 ```java
-import uct8086.ai.common.enums.ToolCategory;
-import uct8086.ai.common.model.ToolExecutionContext;
-import uct8086.ai.common.model.ToolResult;
-import uct8086.ai.core.tool.AbstractTool;
-import java.util.Map;
-
 @Component
 public class MyCustomTool extends AbstractTool {
-
     public MyCustomTool() {
         super("my_tool",
-              "描述这个工具的用途，让模型知道何时使用",
+              "Describe what this tool does and when the model should use it",
               ToolCategory.META,    // FILE_IO | SHELL | SEARCH | WEB | MCP | TASK | AGENT | META
-              false);               // 是否只读
+              false);               // read-only?
     }
 
     @Override
     protected ToolResult doExecute(Map<String, Object> arguments,
                                    ToolExecutionContext context) throws Exception {
         String input = requireString(arguments, "input");
-        // 工具逻辑...
         return ToolResult.success("result");
     }
 }
 ```
 
-工具会自动被 `HarnessCoreAutoConfiguration` 注册到 `ToolRegistry`。
-
-### 自定义 Hook
-
-实现 `ToolHook` 接口：
+### Custom Hook
 
 ```java
-import uct8086.ai.common.enums.HookPhase;
-import uct8086.ai.common.model.HookContext;
-import uct8086.ai.common.model.HookDefinition;
-import uct8086.ai.common.model.HookResult;
-import uct8086.ai.core.hook.ToolHook;
-
 @Component
 public class LoggingHook implements ToolHook {
-
     @Override
     public HookDefinition getDefinition() {
         return new HookDefinition(
-            "log-all",              // hook 名称
+            "log-all",               // hook name
             HookPhase.PRE_TOOL_USE,  // PRE_TOOL_USE | POST_TOOL_USE
-            "*",                     // 匹配的工具名（支持通配符）
-            100                      // 优先级（数值越小越先执行）
+            "*",                     // matched tool name (wildcards supported)
+            100                      // priority (lower runs first)
         );
     }
 
     @Override
     public HookResult onEvent(HookContext context) {
-        // 记录日志、阻止执行或修改结果
         return HookResult.continueExecution();
-        // 或: return HookResult.block("不允许执行此操作");
+        // or: return HookResult.block("not allowed");
     }
 }
 ```
 
-### 自定义 Slash 命令
-
-实现 `HarnessCommand` 接口：
+### Custom Slash Command
 
 ```java
 @Component
 public class HelpCommand implements HarnessCommand {
-
     @Override
     public String getName() { return "help"; }
-
     @Override
-    public String getDescription() { return "显示可用命令"; }
-
+    public String getDescription() { return "Show available commands"; }
     @Override
     public String execute(List<String> args, Map<String, Object> context) {
         return "Available commands: /help, /plan, /commit, ...";
@@ -431,29 +297,25 @@ public class HelpCommand implements HarnessCommand {
 }
 ```
 
-### 自定义技能
+### Custom Skill
 
-创建 Markdown 文件（如 `.uct8086/skills/git-guide.md`）：
+Create a Markdown file (e.g. `.uct8086/skills/git-guide.md`):
 
 ```markdown
 ---
 name: git-guide
-description: Git 操作指南和最佳实践
+description: Git operations guide and best practices
 ---
-# Git 操作指南
-
-## 常用命令
-- `git status` — 查看状态
-- `git log --oneline` — 简洁日志
+# Git Guide
 ...
 ```
 
-技能会自动加载并注入到系统 Prompt 中。
+## Documentation
 
-> **项目结构详情**：各模块类职责说明详见 [docs/project-structure.md](./docs/project-structure.md)。
->
-> **配置参考**：全部配置项说明详见 [docs/configuration.md](./docs/configuration.md)。
+- [Project structure](./docs/project-structure.md) — class responsibilities per module
+- [Configuration reference](./docs/configuration.md) — all config options
+- [Production-readiness assessment](./docs/production-readiness-assessment.md) — concurrency/security gap analysis & fix log
 
 ## License
 
-本项目基于 [Apache License 2.0](./LICENSE) 开源协议。
+[Apache License 2.0](./LICENSE)
