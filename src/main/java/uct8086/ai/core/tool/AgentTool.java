@@ -9,14 +9,10 @@ import uct8086.ai.coordinator.SubagentRegistry;
 import uct8086.ai.core.engine.AgentEngine;
 import uct8086.ai.core.engine.AgentLoopResult;
 import uct8086.ai.core.session.SessionManager;
+import uct8086.ai.tasks.BackgroundTask;
+import uct8086.ai.tasks.TaskManager;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -32,12 +28,25 @@ import org.springframework.stereotype.Component;
  * primitive), where decision authority stays with the orchestrating agent and the
  * harness only provides the delegation primitive.
  *
- * <p>Each spawned sub-agent is registered in the {@link SubagentRegistry} under its
- * {@code name}, keeping a dedicated session. That makes two follow-up primitives
- * possible: {@code send_message} (continue a finished sub-agent in the same session)
- * and {@code task_stop} (abort a background sub-agent).
+ * <h2>Distributed dispatch</h2>
+ * <p>Previously this tool spawned the sub-agent on a local in-process thread pool
+ * ({@code subagentExecutor}). That design worked in single-instance deployments but
+ * broke under horizontal scaling: the spawned session id, the {@code Future} handle,
+ * and the {@code SubagentRegistry} were all local to the JVM that created them, so
+ * {@code send_message} / {@code task_stop} issued from another instance could not
+ * find the sub-agent.
  *
- * <p>Arguments:
+ * <p>Now the sub-agent is dispatched through {@link TaskManager} (Redis Stream +
+ * Consumer Group), so any worker instance in the deployment can pick up and execute
+ * the subtask. The sub-agent's state (role, sessionId, taskId, status, lastResponse)
+ * is persisted in Redis via {@link SubagentRegistry}, visible to all instances.
+ *
+ * <p>Each spawned sub-agent is registered in the {@link SubagentRegistry} under its
+ * {@code name}, keeping a dedicated session id. That makes two follow-up primitives
+ * possible: {@code send_message} (continue a finished sub-agent in the same session)
+ * and {@code task_stop} (abort a background sub-agent via the distributed cancel flag).
+ *
+ * <h2>Arguments</h2>
  * <ul>
  *   <li>{@code name} (required) — a short identifier for the sub-agent</li>
  *   <li>{@code role} (required) — the sub-agent's role/system prompt describing its expertise</li>
@@ -46,29 +55,39 @@ import org.springframework.stereotype.Component;
  *       its result. Set to false to start it in the background, which allows running
  *       several sub-agents in parallel; fetch results later with {@code send_message}.</li>
  * </ul>
+ *
+ * <p><b>Implementation note on {@code wait=true}:</b> in distributed mode there is no
+ * local {@code Future} to block on. The orchestrator polls the {@link TaskManager}
+ * task state (with bounded retries) until the worker reports COMPLETED/FAILED, then
+ * returns the sub-agent's response to the model. If the worker crashes mid-flight the
+ * pending Redis Stream message is reclaimed by another consumer, so the call eventually
+ * resolves (or times out with a recoverable error). For {@code wait=false} the tool
+ * returns immediately after enqueuing; the orchestrator later uses {@code send_message}
+ * to fetch the result.
  */
 @Component
 public class AgentTool extends AbstractTool {
 
     private static final Logger log = LoggerFactory.getLogger(AgentTool.class);
 
+    /**
+     * How long (seconds) to poll a synchronous ({@code wait=true}) sub-agent's task
+     * state before giving up and returning a recoverable error to the model. The model
+     * can then call {@code send_message} to wait longer or pick up the result later.
+     */
+    private static final int SYNC_WAIT_SECONDS = 300;
+    /** Poll interval for the synchronous wait loop. */
+    private static final long POLL_INTERVAL_MS = 500L;
+
     private final ObjectProvider<AgentEngine> agentEngineProvider;
     private final SessionManager sessionManager;
     private final SubagentRegistry subagentRegistry;
-
-    /** Executes background (wait=false) sub-agents, enabling parallel delegation. */
-    private final ExecutorService subagentExecutor = new ThreadPoolExecutor(
-            2, 6, 60L, TimeUnit.SECONDS,
-            new LinkedBlockingQueue<>(20),
-            r -> {
-                Thread t = new Thread(r, "uct8086-subagent-" + System.nanoTime());
-                t.setDaemon(true);
-                return t;
-            });
+    private final TaskManager taskManager;
 
     public AgentTool(ObjectProvider<AgentEngine> agentEngineProvider,
                      SessionManager sessionManager,
-                     SubagentRegistry subagentRegistry) {
+                     SubagentRegistry subagentRegistry,
+                     TaskManager taskManager) {
         super("agent",
                 "Delegate a subtask to a sub-agent that runs in its own isolated session "
                         + "with a specialized role. Use this to break a complex task into "
@@ -81,6 +100,7 @@ public class AgentTool extends AbstractTool {
         this.agentEngineProvider = agentEngineProvider;
         this.sessionManager = sessionManager;
         this.subagentRegistry = subagentRegistry;
+        this.taskManager = taskManager;
     }
 
     @Override
@@ -110,8 +130,13 @@ public class AgentTool extends AbstractTool {
         SessionManager.ConversationSession subSession =
                 sessionManager.createSession(userId, "subagent:" + name, true);
 
+        // Register the sub-agent up front. If a previous agent with the same name is
+        // still RUNNING we surface the error to the model so it can decide what to do.
         SubagentRegistry.SubagentState state;
         try {
+            // Register the sub-agent entry up front (taskId will be filled in once the
+            // TaskManager assigns one). If a previous agent with the same name is still
+            // RUNNING we surface the error to the model so it can decide what to do.
             state = subagentRegistry.register(userId, name, role, subSession.id());
         } catch (IllegalStateException e) {
             return ToolResult.error(e.getMessage());
@@ -120,64 +145,89 @@ public class AgentTool extends AbstractTool {
         log.info("Orchestrator delegating to sub-agent '{}' (userId={}, sessionId={}, wait={})",
                 name, userId, subSession.id(), wait);
 
+        // Enqueue the subtask on the Redis Stream via TaskManager. Any worker in the
+        // consumer group can pick it up and run it through AgentEngine with scope=SUBAGENT.
+        Map<String, String> payload = new LinkedHashMap<>();
+        payload.put("name", name);
+        payload.put("role", role);
+        payload.put("task", task);
+        payload.put("sessionId", subSession.id());
+        BackgroundTask bgTask = taskManager.createTask(
+                userId, name, "Subagent task: " + task, "SUBTASK", payload);
+
+        // Persist the taskId back into the registry so send_message / task_stop can
+        // drive the distributed task (await/cancel) by name.
+        subagentRegistry.updateTaskId(userId, name, bgTask.id());
+
         if (wait) {
-            return toToolResult(name, runAndTrack(engine, userId, state, task), subSession.id());
+            // Synchronous: block on the distributed task completion.
+            return waitAndCollect(name, userId, bgTask.id(), subSession.id());
         }
 
-        // Background mode: return immediately, the sub-agent keeps running.
-        try {
-            Future<?> future = subagentExecutor.submit(() -> runAndTrack(engine, userId, state, task));
-            state.attachFuture(future);
-        } catch (RejectedExecutionException e) {
-            subagentRegistry.markFailed(state, "sub-agent executor is saturated");
-            return ToolResult.error("Cannot start sub-agent '" + name + "': too many sub-agents "
-                    + "are already queued. Wait for running ones to finish.");
-        }
-        return ToolResult.success("Sub-agent '" + name + "' started in the background (session "
-                + subSession.id() + "). Continue with other work, then call send_message(name='"
-                + name + "', message='...') to get its result, or task_stop(name='" + name
+        // Background mode: return immediately, the sub-agent keeps running on a worker.
+        return ToolResult.success("Sub-agent '" + name + "' started in the background (task "
+                + bgTask.id() + ", session " + subSession.id()
+                + "). Continue with other work, then call send_message(name='" + name
+                + "', message='...') to get its result, or task_stop(name='" + name
                 + "') to abort it.",
-                Map.of("subagent", name, "sessionId", subSession.id(), "async", true));
+                Map.of("subagent", name, "sessionId", subSession.id(),
+                        "taskId", bgTask.id(), "async", true));
     }
 
     /**
-     * Run the sub-agent through the engine and keep the registry status in sync.
-     * Interrupted background runs resolve to a stopped state (terminal).
+     * Poll the TaskManager for the sub-agent's task until it finishes (or the wait
+     * budget is exhausted). The distributed worker, when it finishes, will have
+     * recorded the sub-agent's response in the {@link SubagentRegistry} via
+     * {@code AgentCoordinator}'s SUBTASK handler.
      */
-    private AgentLoopResult runAndTrack(AgentEngine engine, Long userId,
-                                        SubagentRegistry.SubagentState state, String task) {
-        try {
-            AgentLoopResult result = engine.execute(userId, task, state.sessionId(), state.role(), AgentScope.SUBAGENT);
-            if (result.success()) {
-                subagentRegistry.markCompleted(state, result.response());
-            } else {
-                subagentRegistry.markFailed(state, result.error());
+    private ToolResult waitAndCollect(String name, Long userId, String taskId, String sessionId) {
+        long deadline = System.currentTimeMillis() + SYNC_WAIT_SECONDS * 1000L;
+        while (System.currentTimeMillis() < deadline) {
+            BackgroundTask t = taskManager.getTask(userId, taskId).orElse(null);
+            if (t == null) {
+                return ToolResult.error("Sub-agent '" + name + "' task vanished from the queue "
+                        + "(taskId=" + taskId + "). Try re-spawning.");
             }
-            return result;
-        } catch (Exception e) {
-            // Note: a sub-agent stopped via task_stop is already in the terminal STOPPED
-            // state, so the markFailed below is a no-op for it.
-            log.warn("Sub-agent '{}' failed: {}", state.name(), e.getMessage());
-            subagentRegistry.markFailed(state, e.getMessage());
-            return AgentLoopResult.failure("Sub-agent '" + state.name() + "' failed: " + e.getMessage(),
-                    0, java.util.List.of(), new uct8086.ai.common.model.TokenUsage());
+            switch (t.status()) {
+                case COMPLETED -> {
+                    // The worker wrote the sub-agent's final response into the SubagentRegistry.
+                    SubagentRegistry.SubagentState st = subagentRegistry.get(userId, name).orElse(null);
+                    String response = (st != null && st.lastResponse() != null)
+                            ? st.lastResponse() : t.output();
+                    return ToolResult.success(response, Map.of(
+                            "subagent", name, "sessionId", sessionId, "taskId", taskId,
+                            "async", false));
+                }
+                case FAILED -> {
+                    return ToolResult.error("Sub-agent '" + name + "' failed: "
+                            + (t.error() != null ? t.error() : "unknown error"),
+                            Map.of("subagent", name, "sessionId", sessionId,
+                                    "taskId", taskId, "async", false));
+                }
+                case CANCELLED -> {
+                    return ToolResult.error("Sub-agent '" + name + "' was cancelled.",
+                            Map.of("subagent", name, "sessionId", sessionId,
+                                    "taskId", taskId, "async", false));
+                }
+                default -> {
+                    // PENDING / RUNNING — keep polling.
+                }
+            }
+            try {
+                Thread.sleep(POLL_INTERVAL_MS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return ToolResult.error("Sub-agent '" + name + "' wait interrupted.",
+                        Map.of("subagent", name, "sessionId", sessionId, "taskId", taskId));
+            }
         }
-    }
-
-    private static ToolResult toToolResult(String name, AgentLoopResult result, String sessionId) {
-        Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("subagent", name);
-        metadata.put("sessionId", sessionId);
-        metadata.put("turns", result.turns());
-        metadata.put("success", result.success());
-        if (result.tokenUsage() != null) {
-            metadata.put("inputTokens", result.tokenUsage().inputTokens());
-            metadata.put("outputTokens", result.tokenUsage().outputTokens());
-        }
-        if (result.success()) {
-            return ToolResult.success(result.response(), metadata);
-        }
-        return ToolResult.error("Sub-agent '" + name + "' failed: " + result.error(), metadata);
+        // Timed out — the sub-agent is still running in the background. The model can
+        // fetch the result later with send_message (which has its own bounded wait).
+        return ToolResult.success("Sub-agent '" + name + "' is still running after "
+                + SYNC_WAIT_SECONDS + "s. Its result is not ready yet; call send_message(name='"
+                + name + "', message='status?') to wait for and fetch its result.",
+                Map.of("subagent", name, "sessionId", sessionId, "taskId", taskId,
+                        "async", true, "stillRunning", true));
     }
 
     private static boolean optionalBool(Map<String, Object> arguments, String key, boolean defaultValue) {
@@ -189,6 +239,8 @@ public class AgentTool extends AbstractTool {
 
     @PreDestroy
     void shutdownExecutor() {
-        subagentExecutor.shutdownNow();
+        // No local executor to shut down anymore — sub-agents run on the distributed
+        // TaskManager consumer pool. Kept for backward compatibility with any subclass
+        // lifecycle hooks; harmless no-op.
     }
 }

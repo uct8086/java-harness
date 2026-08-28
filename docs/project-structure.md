@@ -33,7 +33,7 @@
 核心引擎和子系统：
 
 - **engine** — `AgentEngine`（Agent Loop）、`AgentLoopResult`、`HarnessToolCallbackAdapter`（Spring AI 桥接）（包：`uct8086.ai.core.engine`）
-- **tool** — `ToolRegistry`、`HarnessTool` 接口、`AbstractTool`、`ToolExecutionService` 管线
+- **tool** — `ToolRegistry`、`HarnessTool` 接口、`AbstractTool`、`ToolExecutionService` 管线；**编排三原语** `AgentTool` / `SendMessageTool` / `TaskStopTool` 也在本包下，通过 `TaskManager` 走 Redis Stream 分布式派发
 - **tools** — 内置工具：`BashTool`、`FileReadTool`、`FileWriteTool`、`GlobTool`、`GrepTool`
 - **permission** — `PermissionChecker` 接口、`DefaultPermissionChecker`（四级安全模式 + 路径规则 + 危险命令拦截）
 - **hook** — `HookManager`、`ToolHook` 接口（PreToolUse/PostToolUse 生命周期）
@@ -68,15 +68,19 @@
 后台任务管理（分布式）：
 
 - `BackgroundTask` — 后台任务 record（状态机：PENDING → RUNNING → COMPLETED/FAILED/CANCELLED）（包：`uct8086.ai.tasks`）
-- `TaskManager` — 基于 **Redis Stream + 消费组** 的分布式任务（任务状态存 Redis Hash，跨实例共享、重启可恢复）
+- `TaskManager` — 基于 **Redis Stream + 消费组** 的分布式任务（任务状态存 Redis Hash，跨实例共享、重启可恢复、cancel flag 跨实例生效）
+- 既服务于通用后台任务，也是**多 Agent 编排的分布式派发底座**（编排三原语通过 SUBTASK task type 经此派发到任意 worker 实例）
 
 ## coordinator
 
-多 Agent 协作：
+多 Agent 协作（分布式编排）：
 
 - `Subagent` — 子 Agent record（id, name, role, systemPrompt, status）（包：`uct8086.ai.coordinator`）
-- `AgentCoordinator` — 子 Agent 生成、任务委派
-- `TeamRegistry` — Agent 团队注册表
+- `SubagentRegistry` — **Redis Hash 实现**的子代理状态注册表（key: `harness:subagent:{userId}`，field: agent name，value: JSON {role, sessionId, taskId, status, lastResponse}）。跨实例可见、按 userId 命名空间隔离
+- `AgentCoordinator` — 注册 `SUBTASK` task handler 到 `TaskManager`，worker 端消费时调 `AgentEngine.execute(..., AgentScope.SUBAGENT)`，结果回写 `SubagentRegistry`
+- `OrchestrationMode` — LOCAL/COORDINATOR/SWARM 拓扑开关 + `ORCHESTRATION_TOOLS` 三原语集合
+- `AgentScope` — MAIN/SUBAGENT 执行 scope，配合 OrchestrationMode 决定编排工具可见性
+- `TeamRegistry` — Agent 团队注册表（占位，未启用）
 
 ## mcp
 
