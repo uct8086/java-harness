@@ -138,10 +138,10 @@ public class HarnessProperties {
     @Setter
     public static class Orchestration {
         /**
-         * Orchestration topology:
+         * Orchestration topology（编排拓扑）:
          * LOCAL — single agent, orchestration tools are not registered;
-         * COORDINATOR — star topology, only the main agent can spawn sub-agents;
-         * SWARM — recursive topology, sub-agents can spawn further agents too.
+         * COORDINATOR（统筹员） — star topology, only the main agent can spawn（生成） sub-agents;
+         * SWARM — （目前未完全实现）recursive topology, sub-agents can spawn further agents too.
          */
         private OrchestrationMode mode = OrchestrationMode.COORDINATOR;
     }

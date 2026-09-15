@@ -1,10 +1,7 @@
 package uct8086.ai.core.engine;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -270,7 +267,7 @@ public class AgentEngine {
     }
 
     /**
-     * Orchestration primitives hidden from a run, per the configured mode:
+     * Orchestration primitives（编排原语） hidden from a run, per the configured mode:
      * LOCAL hides them from everyone; COORDINATOR hides them from sub-agents
      * (star topology — only the main agent orchestrates); SWARM hides nothing.
      */
@@ -323,7 +320,6 @@ public class AgentEngine {
      * standard Spring AI 2.0 mechanism. The {@link ToolCallingAdvisor} reads them from
      * {@code ToolCallingChatOptions} at runtime.
      */
-    @SuppressWarnings("unchecked")
     private AgentLoopResult executeInternal(Long userId, String userPrompt, String sessionId, String additionalContext, AgentScope scope) {
         // Enforce per-user cost quota BEFORE processing (circuit breaker).
         costTracker.assertQuota(userId);
@@ -340,8 +336,6 @@ public class AgentEngine {
         // each other's mode.
         PermissionMode permissionMode = permissionChecker.getMode();
         Path workingDir = Path.of(properties.getWorkingDirectory());
-        ToolExecutionContext context = new ToolExecutionContext(
-                session.id(), workingDir, permissionMode);
 
         String baseSystemPrompt = buildSystemPrompt(userId, userPrompt, additionalContext, excludedTools);
         final String systemPrompt = enrichWithRag(baseSystemPrompt, userPrompt);
@@ -351,6 +345,7 @@ public class AgentEngine {
         List<Message> historyMessages = buildHistoryMessages(userId, session.id());
         sessionManager.addMessage(userId, session.id(), AgentMessage.user(userPrompt));
 
+        ToolExecutionContext context = new ToolExecutionContext(session.id(), workingDir, permissionMode);
         ToolCallback[] callbacks = buildToolCallbacks(userId, context, excludedTools);
         int maxTurns = properties.getMaxTurns();
         log.info("Starting agent loop for session {} (scope={}, tools: {}, maxTurns: {}{})",
@@ -360,7 +355,7 @@ public class AgentEngine {
         long startTime = System.currentTimeMillis();
 
         try {
-            // Build the metrics-capturing advisor wrapping the official Spring AI ToolCallingAdvisor
+            // 「工具调用顾问 / 工具调用拦截器」Build the metrics-capturing advisor wrapping the official Spring AI ToolCallingAdvisor
             HarnessToolCallingAdvisor harnessAdvisor = new HarnessToolCallingAdvisor(
                     ToolCallingManager.builder().build(),
                     ToolCallingAdvisor.DEFAULT_ORDER,
@@ -392,23 +387,14 @@ public class AgentEngine {
 
             // Extract final response text
             ChatResponse chatResponse = clientResponse.chatResponse();
-            String response = chatResponse != null && chatResponse.getResult() != null
-                    && chatResponse.getResult().getOutput() != null
-                    && chatResponse.getResult().getOutput().getText() != null
-                    ? chatResponse.getResult().getOutput().getText()
-                    : "";
+            String response = extractText(chatResponse);
 
             TokenUsage usage = extractUsage(chatResponse);
 
             // Extract metrics captured by HarnessToolCallingAdvisor
             List<AgentLoopResult.ToolCallRecord> toolCallRecords =
-                    (List<AgentLoopResult.ToolCallRecord>) clientResponse.context()
-                            .getOrDefault(HarnessToolCallingAdvisor.CONTEXT_TOOL_CALL_RECORDS,
-                                    Collections.emptyList());
-
-            int[] turnCounter = (int[]) clientResponse.context()
-                    .get(HarnessToolCallingAdvisor.CONTEXT_TURNS);
-            int turns = (turnCounter != null) ? turnCounter[0] : 1;
+                    HarnessToolCallingAdvisor.getToolCallRecords(clientResponse);
+            int turns = HarnessToolCallingAdvisor.getTurns(clientResponse);
 
             long elapsed = System.currentTimeMillis() - startTime;
             log.info("Agent loop finished (scope={}): {} turns, {} tool calls, {}ms, in={} out={}",
@@ -607,14 +593,29 @@ public class AgentEngine {
         return callbacks.toArray(ToolCallback[]::new);
     }
 
+    /**
+     * Safely extract the final text from a {@link ChatResponse}, returning an empty
+     * string when the response or any intermediate node ({@link Generation},
+     * {@link AssistantMessage}) is null. Avoids deep, repeated null-checking at
+     * call sites.
+     */
+    private static String extractText(ChatResponse resp) {
+        if (resp == null) return "";
+        Generation generation = resp.getResult();
+        if (generation == null) return "";
+        AssistantMessage output = generation.getOutput();
+        String text = output.getText();
+        return text != null ? text : "";
+    }
+
     /** Extract {@link TokenUsage} from Spring AI's {@link ChatResponse} metadata. */
     private static TokenUsage extractUsage(ChatResponse resp) {
-        if (resp == null || resp.getMetadata() == null) return new TokenUsage();
+        if (resp == null) return new TokenUsage();
         var usage = resp.getMetadata().getUsage();
-        if (usage == null) return new TokenUsage();
+        usage.getCompletionTokens();
         return TokenUsage.of(
                 usage.getPromptTokens(),
-                usage.getCompletionTokens() != null ? usage.getCompletionTokens() : 0L);
+                usage.getCompletionTokens());
     }
 
     /**
