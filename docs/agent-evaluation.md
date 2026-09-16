@@ -19,8 +19,8 @@ Agent 不只生成文本，它会在多轮交互中规划、调用工具、读�
 - Agent 定义：模型与参数
 - Prompt、上下文与记忆
 - Tools、Skills、MCP 与知识资源
-- 身份、权限与 Guardrails
-- Agent Harness / Scaffold
+- 身份、权限与 Guardrails（安全护栏）
+- Agent Harness / Scaffold（脚手架）
 - Sandbox 和外部业务环境
 
 **只要任意一项变化**（切模型、改 Prompt、调工具权限、升级 Harness），评估结果就可能改变，因此评估报告必须记录被测配置与版本。
@@ -259,6 +259,8 @@ quality_rubric:
 ---
 
 ## 六、pass@k 与 pass^k
+
+> 读法：`pass@k` 读作「pass at k」（`@` 读 "at"，如 `pass@1` = "pass at one"）；`pass^k` 读作「pass to the k」（`^` 读 "to the"，表示 k 次方，如 `pass^3` = "pass to the three"）。注意二者含义不同：`pass@k` 是「k 次机会里至少成功一次」，`pass^k` 是「连续 k 次全部成功」。
 
 ### pass@k：多次机会中至少成功一次
 
