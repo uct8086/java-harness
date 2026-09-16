@@ -6,6 +6,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.stream.*;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -49,6 +50,26 @@ public class TaskManager {
     private static final String CANCEL_FLAG_PREFIX = "harness:task:cancel:";
     private static final Duration TASK_TTL = Duration.ofHours(24);
     private static final Duration CANCEL_FLAG_TTL = Duration.ofHours(24);
+
+    /**
+     * Minimum idle time before a pending message is considered orphaned (its
+     * consumer likely crashed) and can be reclaimed by another instance via XCLAIM.
+     * Set high enough to avoid stealing a message that is merely slow.
+     *
+     * <p>Must exceed the maximum expected task execution time — sub-agents can run
+     * for minutes (the {@code agent} tool's sync wait is 300s), so a short threshold
+     * here would wrongly reclaim a still-running (but slow) task and execute it twice.
+     * A 300s threshold trades longer crash-detection latency for correctness against
+     * slow tasks. A heartbeat-based refresh is the long-term fix to shorten this.
+     */
+    private static final Duration CLAIM_IDLE_THRESHOLD = Duration.ofSeconds(300);
+
+    /**
+     * Maximum number of times a message may be delivered (incl. reclaims) before it
+     * is abandoned. Guards against a task that deterministically crashes being
+     * reclaimed forever.
+     */
+    private static final long MAX_DELIVERY_COUNT = 3;
 
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
@@ -136,15 +157,18 @@ public class TaskManager {
                                 Consumer.from(CONSUMER_GROUP, consumerName),
                                 StreamReadOptions.empty().count(10).block(Duration.ofSeconds(2)),
                                 StreamOffset.create(STREAM_KEY, ReadOffset.lastConsumed()));
-                if (records == null || records.isEmpty()) {
-                    continue;
+                if (records != null && !records.isEmpty()) {
+                    for (MapRecord<String, Object, Object> record : records) {
+                        // handle() acknowledges the message only after the handler has
+                        // finished (success or failure), so a crash mid-execution leaves
+                        // the message pending and it is reclaimed by another instance below.
+                        handle(record);
+                    }
                 }
-                for (MapRecord<String, Object, Object> record : records) {
-                    // handle() acknowledges the message only after the handler has
-                    // finished (success or failure), so a crash mid-execution leaves
-                    // the message pending and it can be reclaimed by another instance.
-                    handle(record);
-                }
+                // Reclaim orphaned messages: a previous consumer crashed before ACK,
+                // leaving them pending. XCLAIM hands them to this consumer after they
+                // have been idle past the threshold, so tasks survive instance crashes.
+                reclaimStaleMessages(consumerName);
             } catch (Exception e) {
                 log.warn("Task consumer poll error", e);
                 try {
@@ -154,6 +178,108 @@ public class TaskManager {
                     break;
                 }
             }
+        }
+    }
+
+    /**
+     * Find messages left pending by dead consumers and reclaim them via XCLAIM.
+     *
+     * <p>Only messages idle past {@link #CLAIM_IDLE_THRESHOLD} are claimed, so a
+     * merely slow (still-alive) consumer is never robbed of its message. A message
+     * whose total delivery count already reached {@link #MAX_DELIVERY_COUNT} is
+     * abandoned (XACK + marked failed) instead of reclaimed, guarding against a task
+     * that deterministically crashes being reclaimed forever.
+     */
+    private void reclaimStaleMessages(String consumerName) {
+        // Idle-past-threshold pending messages that should be reclaimed.
+        List<RecordId> reclaimIds = new ArrayList<>();
+        // Idle-past-threshold pending messages that exceeded the retry budget.
+        List<Map<String, String>> abandon = new ArrayList<>();
+        try {
+            // pending(key, group, range, count) — range unbounded, cap the scan size.
+            PendingMessages pending = redisTemplate.opsForStream().pending(
+                    STREAM_KEY, CONSUMER_GROUP, Range.unbounded(), 100L);
+            if (pending == null || pending.isEmpty()) {
+                return;
+            }
+            for (PendingMessage pm : pending) {
+                Duration idle = pm.getElapsedTimeSinceLastDelivery();
+                if (idle == null || idle.compareTo(CLAIM_IDLE_THRESHOLD) < 0) {
+                    continue; // still fresh — the owning consumer may simply be slow
+                }
+                if (pm.getTotalDeliveryCount() >= MAX_DELIVERY_COUNT) {
+                    abandon.add(readMessageFields(pm.getIdAsString()));
+                    acknowledge(pm.getIdAsString()); // give up on this message
+                } else {
+                    reclaimIds.add(pm.getId());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to inspect pending messages", e);
+            return;
+        }
+
+        abandon.forEach(fields -> markAbandoned(fields));
+
+        if (reclaimIds.isEmpty()) {
+            return;
+        }
+
+        try {
+            // XCLAIM: transfer ownership of the stale messages to this consumer.
+            List<MapRecord<String, Object, Object>> reclaimed = redisTemplate.opsForStream()
+                    .claim(STREAM_KEY, CONSUMER_GROUP, consumerName,
+                            CLAIM_IDLE_THRESHOLD, reclaimIds.toArray(new RecordId[0]));
+            if (reclaimed == null || reclaimed.isEmpty()) {
+                return;
+            }
+            log.info("Reclaimed {} stale task message(s) via XCLAIM", reclaimed.size());
+            for (MapRecord<String, Object, Object> record : reclaimed) {
+                handle(record);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to reclaim stale task messages", e);
+        }
+    }
+
+    /**
+     * Read a stream message's field map by id. Used to mark a task failed when its
+     * message is abandoned after exceeding the retry budget.
+     */
+    private Map<String, String> readMessageFields(String messageId) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        try {
+            // range(key, Range<String>) — the message-id bounds are Strings here.
+            List<MapRecord<String, Object, Object>> records = redisTemplate.opsForStream()
+                    .range(STREAM_KEY, Range.closed(messageId, messageId));
+            if (records != null && !records.isEmpty()) {
+                records.get(0).getValue()
+                        .forEach((k, v) -> fields.put(String.valueOf(k), String.valueOf(v)));
+            }
+        } catch (Exception e) {
+            log.warn("Failed to read message fields for {}", messageId, e);
+        }
+        return fields;
+    }
+
+    /**
+     * Mark a task failed after its message exhausted the delivery retry budget.
+     */
+    private void markAbandoned(Map<String, String> fields) {
+        if (fields.isEmpty()) {
+            return;
+        }
+        try {
+            Long userId = Long.valueOf(fields.get("userId"));
+            String taskId = fields.get("taskId");
+            BackgroundTask task = loadTask(userId, taskId);
+            if (task != null) {
+                updateStatus(userId, taskId, task.failed(
+                        "Abandoned after " + MAX_DELIVERY_COUNT + " delivery attempts"));
+                log.warn("Task abandoned after exceeding delivery budget: {} ({})", task.name(), taskId);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to mark abandoned task", e);
         }
     }
 

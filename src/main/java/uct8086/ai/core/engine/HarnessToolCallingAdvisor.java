@@ -34,6 +34,26 @@ public class HarnessToolCallingAdvisor extends ToolCallingAdvisor {
     /** Context key for turn counter ({@code int[1]}) in {@link ChatClientResponse#context()}. */
     public static final String CONTEXT_TURNS = "uct8086.turns";
 
+    /**
+     * Type-safe accessor for the tool-call records captured during the loop.
+     * Encapsulates the unchecked cast that {@link ChatClientResponse#context()}
+     * (a {@code Map<String, Object>}) otherwise forces on callers.
+     */
+    @SuppressWarnings("unchecked")
+    public static List<AgentLoopResult.ToolCallRecord> getToolCallRecords(ChatClientResponse response) {
+        Object value = response.context().get(CONTEXT_TOOL_CALL_RECORDS);
+        return value instanceof List<?> list ? (List<AgentLoopResult.ToolCallRecord>) list : List.of();
+    }
+
+    /**
+     * Type-safe accessor for the turn counter captured during the loop. Defaults
+     * to {@code 1} when absent (e.g. a single-call loop that never advanced).
+     */
+    public static int getTurns(ChatClientResponse response) {
+        int[] counter = (int[]) response.context().get(CONTEXT_TURNS);
+        return counter != null ? counter[0] : 1;
+    }
+
     public HarnessToolCallingAdvisor(ToolCallingManager toolCallingManager,
                                       ToolExecutionEligibilityChecker toolExecutionEligibilityChecker,
                                       int advisorOrder,

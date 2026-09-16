@@ -48,6 +48,10 @@ public class SecurityConfig {
                 .requestMatchers("/api/auth/login", "/api/auth/logout").permitAll()
                 // Health check (for K8s probes)
                 .requestMatchers("/actuator/health").permitAll()
+                // Prometheus scrape endpoint: open so the Prometheus server can pull
+                // metrics without a session cookie. If protection is required, do it at
+                // the network layer (private network / firewall) rather than app auth.
+                .requestMatchers("/actuator/prometheus").permitAll()
                 // SSE streaming endpoint: auth is handled by AuthTokenFilter (cookie-based)
                 // and CurrentUser.requireId() at controller entry. The async dispatch back
                 // from SseEmitter would otherwise hit AuthorizationFilter with an empty

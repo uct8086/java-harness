@@ -44,6 +44,37 @@ services:
       timeout: 5s
       retries: 5
 
+  # Prometheus — 抓取 UCT8086-AI 的 /actuator/prometheus 指标
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: uct8086-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+  # Grafana — 可视化 Prometheus 采集的指标
+  grafana:
+    image: grafana/grafana:latest
+    container_name: uct8086-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+
 volumes:
   redis-data:
   postgres-data:
+  prometheus-data:
+  grafana-data:
